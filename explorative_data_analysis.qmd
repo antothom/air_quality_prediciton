@@ -1,0 +1,797 @@
+---
+title: "Explorative data analysis and pre-processing"
+author: "Antoine Thomas"
+date: 2023-08-03
+format:
+  html: 
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
+editor: visual
+theme:
+  light: flatly
+  dark: darkly
+---
+
+```{r Loading packages}
+#| include: false
+library(tidyverse)
+library(lubridate)
+library(knitr)
+library(zoo)
+library(corrr)
+```
+
+## Explorative data analysis
+
+Exploratory data analysis involves examining the data sets imported as part of the data collection process. The first step is to understand the datasets and their variables, gain basic insights, and perform tasks such as adjusting data types if necessary. Another step is to investigate missing observations and how to deal with them. Finally, the actual analysis begins with examining distributions by calculating summary statistics and plots in the form of box plots, histograms, etc. Temporal trends and anomalies as well as outliers can be identified. Correlations, especially linear relationships between pollutant concentrations and weather or traffic data, are then examined.
+
+### Loading data sets from data collection
+
+```{r Loading data}
+#| message: false
+#| warning: false
+
+# Import of data sets which have been exported at the end of data collection
+air_weather_df <- read_csv2(file = "Daten/DataCollection/air_weather_df.csv") %>%
+  select(-...1)
+traffic_df <- read_csv2(file = "Daten/DataCollection/traffic_df.csv") %>%
+  select(-...1)
+traffic_detectors <- read_csv2(file = "Daten/DataCollection/traffic_detectors.csv") %>%
+  select(-...1)
+airquality_stations <- read_csv2(file = "Daten/DataCollection/airquality_stations.csv") %>%
+  select(-...1)
+
+# Extracting stations and groups from airquality_stations
+airquality_station_groups <- airquality_stations %>%
+  select(name, stationgroups) %>%
+  distinct()
+
+# At a first sight, it appears that a lot of air quality monitoring data is 
+# missing before the beginning of 2017. It is therefore decided to exclude 
+# this data from the analysis
+air_weather_df <- air_weather_df %>%
+  filter(date >= as.Date("2017-01-01"))
+
+# Grouping air quality monitoring data by station
+airweather_by_station <- tibble(Station = airquality_station_groups %>% pull(name)) %>%
+  mutate(messwerte = map(Station, function(x) air_weather_df %>% filter(Station == x)))
+
+
+
+```
+
+According to the data available to us, there are 20 air quality monitoring stations in Berlin, evenly distributed throughout the city and its immediate surroundings. These can be divided into 3 categories: "Suburb", "Background" and "Traffic". "Suburb" stations are located in the suburbs of Berlin, some of them in forests. "Background" includes stations that are located in the city, but collect typical measurements for residential areas. "Traffic" stations are located in the immediate vicinity of a major road, and their readings are likely to be strongly influenced by traffic.
+
+### Observation and handling of missing values
+
+```{r Observation of missing values}
+#| message: false
+#| warning: false
+
+# Function to compute the relative amount of missing values (NA) for each station and pollutant 
+calc_na_amount <- function(st, df) {
+  df %>%
+    map(., ~((sum(is.na(.))/length(.))*100)) %>%
+    as_tibble() %>%
+    mutate(Station = st)
+}
+
+# Function to classify stations regarding the amount of missing data
+classify_eliminate <- function(vec) {
+  ifelse(sum(vec == T)>2, T, F)
+}
+
+
+# Computing the relative amount of NA's for eacht pollutant and Station.
+# Providing information whether respective Station will be excluded or not. 
+rel_na_amount_by_station <- airweather_by_station %>%
+  mutate(na_amount = map2(Station, messwerte, calc_na_amount)) %>%
+  pull(na_amount) %>%
+  bind_rows() %>%
+  select(Station,
+         pm25,
+         pm10,
+         O3,
+         NO2) %>%
+  mutate(missing_pm25 = ifelse(.$pm25 > 25, T, F),
+         missing_pm10 = ifelse(.$pm10 > 25, T, F),
+         missing_O3 = ifelse(.$O3 > 25, T, F),
+         missing_NO2 = ifelse(.$NO2 > 25, T, F)) %>%
+  mutate(missing_agg = pmap(list(missing_pm25,missing_pm10,missing_O3,missing_NO2),c)) %>%
+  mutate(eliminate = map(missing_agg, classify_eliminate),
+         eliminate = as.logical(eliminate))
+
+
+# Removing not needed functions
+remove(calc_na_amount,
+       classify_eliminate)
+
+
+# Stations, providing nearly complete data
+stations_values_complete <- rel_na_amount_by_station %>%
+  filter(missing_pm25 == F,
+         missing_pm10 == F,
+         missing_O3 == F,
+         missing_NO2 == F,
+         eliminate == F) %>%
+  pull(Station)
+
+# Stations, which do not monitor O3 values
+stations_O3_missing <- rel_na_amount_by_station %>%
+  filter(missing_O3 == T,
+         eliminate == F) %>%
+  pull(Station)
+
+# Stations, which do not monitor PM2.5/PM10 values
+stations_PM_missing <- rel_na_amount_by_station %>%
+  filter(missing_pm25 == T,
+         missing_pm10 == T,
+         eliminate == F) %>%
+  pull(Station)
+
+
+# Stations, their monitoring values as well as their missing values and type
+airweather_by_used_stations <- tibble(Station = stations_values_complete, missing_values = NA) %>%
+  rbind(tibble(Station = stations_O3_missing, missing_values = "O3")) %>%
+  rbind(tibble(Station = stations_PM_missing, missing_values = "PM2.5/PM10")) %>%
+  inner_join(airweather_by_station) %>%
+  left_join(airquality_station_groups, by = c("Station" = "name"))
+
+# Removing not needed data
+remove(stations_values_complete,
+       stations_O3_missing,
+       stations_PM_missing)
+
+
+```
+
+It is noticeable that some stations provide very reliable data, while others provide very unreliable or no data at all. In particular, "traffic" type stations do not record data for O~3~. Some "suburb" stations are also characterized by missing data for PM~2.5~ and PM~10~. For some other stations, up to almost 70% of the values are missing over the period from January 2017 to May 2023. The decision to include stations in further analysis was based on the proportion of missing data points for each pollutant. If a station has more than 25% missing observations for more than two pollutants, it is excluded from our dataset. The following table shows the relative proportion of missing values and the decision to exclude or not to exclude a station.
+
+```{r}
+#| echo: false
+
+# Displaying data frame as kable table
+rel_na_amount_by_station %>%
+  select(Station, pm25, pm10, O3, NO2, eliminate) %>%
+  kable()
+
+```
+
+The handling of missing data is unclear. Simply deleting all tuples with missing values can result in a significant amount of data being lost. Although for some pollutants there are longer periods where no measurements are available, there are also very short periods of a few hours in the datasets where the data probably could not be collected correctly. Estimating data over a longer period of time is complicated because measurements may vary irregularly over many consecutive hours or days. In such a case, estimation with e.g. linear methods would run the risk of estimating data that would later do more harm than good as training data. However, over very short periods of time, the probability of large fluctuations is greatly reduced. In such a situation, it would be useful to estimate the missing data. Therefore, up to 4 consecutive missing observations are estimated using interpolated values. In this way, the proportion of missing observations can be reduced to a certain extent without running the risk of neglecting large fluctuations in the measured values.
+
+```{r Pollutant interpolation}
+#| message: false
+#| warning: false
+
+# Function to approximate values by interpolation for given columns in a dataframe 
+estimate_by_interpolation <- function(df, columns, maximum_gap) {
+  for (col in columns) {
+    # if a column has no values at all, do not interpolate
+    if ((sum(is.na(df[[col]]))/length(df[[col]])) == 1) { 
+      break
+    }
+    
+    na_start <- min(which(!is.na(df[[col]]))) # index of first non NA value
+    na_end <- max(which(!is.na(df[[col]]))) # index of last non NA value
+    
+    # approximate values between first and last NA value
+    df[[col]][na_start:na_end] <- na.approx(
+      df[[col]][na_start:na_end], maxgap = maximum_gap
+      )
+    
+  }
+  return(df)
+}
+
+# Replace missing values by Interpolation for all pollutants
+airweather_by_used_stations <- airweather_by_used_stations %>%
+  mutate(messwerte = map(.x = messwerte, estimate_by_interpolation, 
+                         c("pm25", "pm10", "O3", "NO2"), 
+                         4))
+
+```
+
+### Exploration of pollutant distributions and trends
+
+To get a concrete insight into the air quality measurement data, the first step is to look at their distributions. Particular attention is paid to the mean and median values. For NO~2~, the mean value for all stations considered is 22.1 μg/m^3^. PM~10~ follows with a mean of 19.9 μg/m^3^. O~3~ is the most concentrated pollutant with an average of 49.0 μg/m^3^. The least concentrated is PM~2.5~ with an average of 13.2 μg/m^3^. The mean for PM~10~, PM~2.5~ and O~3~ is about 2 μg/m^3^ above the median. For NO~2~, the deviation is somewhat larger at more than 5 μg/m^3^. It is particularly noticeable that all pollutants show extremely strong outliers. Especially PM~10~ stands out with a maximum value of 1501 μg/m^3^.
+
+```{r Exploration of pollutant distributions 1}
+#| message: false
+#| warning: false
+
+# Distribution of pollutant concentration by pollutant
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  select(pm25, pm10, O3, NO2) %>%
+  summary()
+```
+
+If the station types are considered separately, the influence of the location and position of the stations on the measured values becomes clear. For NO~2~, PM~10~ and PM~2.5~ it is apparent that the values are lowest in suburban areas and highest by roads. Only O~3~ is higher in the suburbs than next to roads. The urban background stations are on average between the other two station types for all pollutants.
+
+```{r Exploration of pollutant distributions 2}
+#| message: false
+#| warning: false
+#| echo: false
+
+# Distribution of pollutant concentration by pollutant and station
+pollutant_distributions_by_station <- airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  select(date, Station, pollutant, concentration, stationgroups) %>%
+  group_by(Station, pollutant, stationgroups) %>%
+  summarise(min = min(concentration, na.rm = T),
+            mean = mean(concentration, na.rm = T),
+            median = median(concentration, na.rm = T),
+            max = max(concentration, na.rm = T)) %>%
+  na.omit() %>%
+  ungroup()
+
+# Distribution of pollutant concentration by pollutant and station type
+pollutant_distributions_by_stationgroups <- airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  select(date, Station, pollutant, concentration, stationgroups) %>%
+  group_by(stationgroups, pollutant) %>%
+  summarise(min = min(concentration, na.rm = T),
+            mean = mean(concentration, na.rm = T),
+            median = median(concentration, na.rm = T),
+            max = max(concentration, na.rm = T)) %>%
+  ungroup()
+
+
+
+# Boxplot visualization of the pollutant distribution by station type
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  select(date, Station, pollutant, concentration, stationgroups) %>%
+  mutate(stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic"))) %>%
+  ggplot(aes(x = pollutant, y = concentration, colour = stationgroups)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Pollutant",
+       y = expression(Pollutant~concentration~(μg/m^{"3"}~-~log-scaled)),
+       title = "Distribution of pollutant concentrations by station type",
+       colour = "Station type",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+The differentiation between weekdays and weekends shows clear differences in the mean pollutant concentrations for all station types. For all pollutants except O~3~, higher values are found on weekdays. O~3~, on the other hand, is measured with higher values on weekends. The difference between the station types is the fact that the differences between weekdays and weekend days are significantly greater along roads and in the city than in suburban areas.
+
+```{r Exploration of pollutant distributions 3}
+#| message: false
+#| warning: false
+#| echo: false
+
+# Boxplot visualization of the pollutant distribution by station type
+# Differentiation between working days and weekend days
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  select(date, Station, pollutant, concentration, stationgroups) %>%
+  mutate(weekday = wday(date),
+         day_type = ifelse(weekday %in% c(1,7), "Weekend", "Weekday"),
+         stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic"))) %>%
+  ggplot(aes(x = pollutant, y = concentration, colour = day_type)) +
+  geom_boxplot() +
+  facet_wrap(~stationgroups) +
+  scale_y_log10() +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Pollutant",
+       y = expression(Pollutant~concentration~(μg/m^{"3"}~-~log-scaled)),
+       title = "Distribution of pollutant concentrations by station type for weekdays and weekend days",
+       colour = "Day type",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+Looking at the average pollutant concentrations over the course of the day, the above trends can be examined in more detail. It is noticeable that for NO~2~, especially on weekdays, there is a strong increase in concentration in the course of the morning. A similar but much weaker increase can be observed in the late afternoon. As this observation is mainly visible for the stations of the "traffic" type, it can be assumed that these are emissions from rush-hour traffic. The fact that these variations are not visible on weekends reinforces this assumption. It can also be seen that the increase of NO2 in the morning hours leads to a strong decrease of O~3~ measurements. However, this decrease is not visible in the afternoon. This phenomenon will be examined in more detail below. For PM~10~ and PM~2.5~, an increase of the measured values in the morning is also observed on weekdays, which decreases continuously during the day. On weekends, there is no significant change in particulate matter levels.
+
+```{r Exploration of pollutant distributions 4}
+#| message: false
+#| warning: false
+#| echo: false
+
+
+# Visualization of the avergae pollutant concentration over the course of a working day
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  select(date, Station, pollutant, concentration, stationgroups) %>%
+  mutate(weekday = wday(date),
+         hour = hour(date),
+         stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic"))) %>%
+  filter(!weekday %in% c(1,7)) %>%
+  group_by(pollutant,
+           hour, 
+           stationgroups) %>%
+  summarise(avg_concentration = mean(concentration, na.rm = T)) %>%
+  ggplot(aes(x = hour, y = avg_concentration, colour = pollutant)) +
+  geom_line() +
+  facet_wrap(~stationgroups) +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Hour of the day",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = "Average pollutant concentration over the course of a working day",
+       colour = "Pollutant",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+
+# Visualization of the avergae pollutant concentration over the course of a weekend day
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  select(date, Station, pollutant, concentration, stationgroups) %>%
+  mutate(weekday = wday(date),
+         hour = hour(date),
+         stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic"))) %>%
+  filter(weekday %in% c(1,7)) %>%
+  group_by(pollutant,
+           hour, 
+           stationgroups) %>%
+  summarise(avg_concentration = mean(concentration, na.rm = T)) %>%
+  ggplot(aes(x = hour, y = avg_concentration, colour = pollutant)) +
+  geom_line() +
+  facet_wrap(~stationgroups) +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Hour of the day",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = "Average pollutant concentration over the course of a weekend day",
+       colour = "Pollutant",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+```
+
+When distinguishing between the seasons, clear differences can be seen, especially for NO~2~ and O~3~. While for NO~2~ significantly lower values are measured in spring and summer than in winter and fall, the opposite effect can be observed for O~3~. Here the values are generally higher in spring and summer than in winter and fall. In the light of previous observations comparing NO~2~ and O~3~, a counteracting effect may be suspected here. For PM~10~ there is no real seasonal difference. However, PM~2.5~ values tend to be somewhat lower in summer and spring than during winter and fall.
+
+```{r Exploration of pollutant distributions 5}
+#| message: false
+#| warning: false
+#| echo: false
+
+# Function to define a season for given date
+getSeason <- function(dates) {
+  WS <- as.Date("2020-12-21", format = "%Y-%m-%d") # Winter Solstice
+  SE <- as.Date("2020-03-20",  format = "%Y-%m-%d") # Spring Equinox
+  SS <- as.Date("2020-06-20",  format = "%Y-%m-%d") # Summer Solstice
+  FE <- as.Date("2020-09-22",  format = "%Y-%m-%d") # Fall Equinox
+  
+  # Convert dates from any year to 2023 dates
+  d <- as.Date(strftime(dates, format="2020-%m-%d"))
+  
+  ifelse (d >= WS | d < SE, "Winter",
+          ifelse (d >= SE & d < SS, "Spring",
+                  ifelse (d >= SS & d < FE, "Summer", "Fall")))
+}
+
+
+
+# Visualization of average pollutant concentration depending on the season
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  mutate(season = getSeason(date)) %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  select(date, Station, pollutant, concentration, season) %>%
+  mutate(season = factor(.$season, levels = c("Winter", "Spring", "Summer", "Fall"))) %>%
+  ggplot(aes(x = pollutant, y = concentration, colour = season)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Pollutant",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = "Average pollutant concentration by season",
+       colour = "Season",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+*Missing: Explanation Relation O3 and NO2*
+
+### Combining pollutant concentration with traffic data
+
+In order to identify correlations between traffic and air quality data, these data were merged as part of the exploratory data analysis. To ensure an appropriate relationship between the number of vehicles and the pollutants emitted, the number of cars was added to the doubled number of actual trucks. O~3~ was not included in this case as its evolution is not directly related to road traffic and the amount of data for this pollutant is very limited. The following figure shows the average development of the pollutants PM~2.5~, PM~10~ and NO~2~ as well as the number of vehicles over the course of a day at air quality monitoring stations of the category "traffic". In particular, there is a similarity between the evolution of NO~2~ and the number of vehicles. For PM~2.5~ and PM~10~ there are no clear similarities. Only on weekdays does it appear that there is a morning peak, as with the number of vehicles. It is also noticeable that the highest points of the measured pollutant concentrations are reached only 1-2 hours after the highest values of the traffic volume. The traffic volume values (number of vehicles at hour t of a day) are therefore adjusted to a moving average according the following formula.
+
+$$
+n_{t_{adj}} = \frac{(n_t + n_{t-1} + n_{t-2})}{3}
+$$
+
+```{r Combining air quality with traffic data}
+#| message: false
+#| warning: false
+#| echo: false
+
+
+# Data frame containing all traffic detectors in direct proximity to respective air quality measurement stations
+traffic_detectors_near_air_stations <- tibble(
+  Station = airweather_by_used_stations %>% filter(stationgroups == "traffic") %>% pull(Station),
+  detectors = list(c("TE386", "TE395"),c("TE014", "TE530", "TE531"),c("TE385", "TE384"),c("TE393", "TE394"))
+)
+
+# Function returning traffic data for a list of given traffic detector IDs
+get_traffic_data_by_detectors <- function(detectors) {
+  traffic_df %>%
+    filter(cs_shortname %in% detectors) %>%
+    estimate_by_interpolation(c("q_pkw_mq_hr", "q_lkw_mq_hr"), 4) %>%
+    group_by(date) %>%
+    summarise(q_pkw_mq_hr = sum(q_pkw_mq_hr),
+              q_lkw_mq_hr = sum(q_lkw_mq_hr)) %>%
+    ungroup() %>%
+    mutate(q_kfz_adj = q_pkw_mq_hr + 2 * q_lkw_mq_hr)
+}
+
+# Data frame with added traffic data to pollutant and weather values
+airweather_traffic_df <- airweather_by_used_stations %>%
+  filter(stationgroups == "traffic") %>%
+  left_join(traffic_detectors_near_air_stations) %>%
+  mutate(traffic = map(.x = detectors, .f = get_traffic_data_by_detectors),
+         messwerte = map2(.x = messwerte, .y = traffic, left_join)) %>%
+  pull(messwerte) %>%
+  bind_rows()
+
+
+# Visualization of average pollutant concentration and the amount of traffic at 
+# traffic stations over the course of a day
+airweather_traffic_df %>%
+  mutate(hour = hour(date),
+         day_type = ifelse(wday(date) %in% c(1,7), "Weekend", "Weekday")) %>%
+  select(-O3) %>%
+  gather(key= "pollutant", value = "concentration", 4:6) %>%
+  group_by(hour, pollutant, day_type) %>%
+  summarise(avg_concentration = mean(concentration, na.rm = T),
+            avg_vehicles = mean(q_kfz_adj, na.rm = T)) %>%
+  ggplot(aes(x = hour)) +
+  geom_line(aes(y = avg_concentration, colour = pollutant)) +
+  geom_line(aes(y = avg_vehicles/60, colour = "Traffic")) +
+  scale_y_continuous(name = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+                     sec.axis = sec_axis(trans=~.*60, name="Average amount of cars")
+                     ) +
+  facet_wrap(~day_type) +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Hour of the day",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = "Average pollutant concentration and traffic over the course of a day",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de, viz.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"),
+        legend.title = element_blank())
+  
+
+
+# Visualization of average pollutant concentration and the amount of adjusted traffic at 
+# traffic stations over the course of a day
+airweather_traffic_df %>%
+  mutate(hour = hour(date),
+         day_type = ifelse(wday(date) %in% c(1,7), "Weekend", "Weekday")
+         ,q_kfz_adj = (q_kfz_adj + lag(q_kfz_adj,2) + lag(q_kfz_adj,1))/3) %>%
+  select(-O3) %>%
+  gather(key= "pollutant", value = "concentration", 4:6) %>%
+  group_by(hour, pollutant, day_type) %>%
+  summarise(avg_concentration = mean(concentration, na.rm = T),
+            avg_vehicles = mean(q_kfz_adj, na.rm = T)) %>%
+  ggplot(aes(x = hour)) +
+  geom_line(aes(y = avg_concentration, colour = pollutant)) +
+  geom_line(aes(y = avg_vehicles/60, colour = "Traffic")) +
+  scale_y_continuous(name = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+                     sec.axis = sec_axis(trans=~.*60, name="Adj. average amount of cars")
+                     ) +
+  facet_wrap(~day_type) +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Hour of the day",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = "Average pollutant concentration and traffic (adjusted) over the course of a day",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de, viz.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"),
+        legend.title = element_blank())
+
+```
+
+### Observation of strong outliers and unusual patterns
+
+For a better understanding of the very high outliers, these have been examined individually. The highest values for different pollutants are shown in the following figures. Outliers were identified using the inter-quartile range (IQR). First, the first and third quantiles (Q1/Q3) are determined. From these the IQR can be calculated (IQR = Q3-Q1). The so-called "normal data range" is defined in our case with a lower limit of Q1-4\*IQR and an upper limit of Q3+4\*IQR. All data points that fall below or exceed these limits are marked with dots in the figures. Despite further investigation and attempts to explain high readings as being due to particularly unusual weather events or exceptionally high short-term traffic volumes, no precise reasons could be identified for these strong outliers. It can therefore be speculated that they are due to local factors not captured in our data, such as short-term construction work, fires, malfunctioning monitoring stations, or even deliberate falsification of readings by passers-by. Additionally, extremely high levels of PM~10~ and PM~2.5~ are measured every year on New Year's Eve. These nights recorded the highest PM~2.5~ readings listed in our data set. These are caused by the burning of fireworks in Berlin. It is noteworthy that due to the ban on the sale of pyrotechnics and the cancellation of public fireworks due to the corona pandemic on New Year's Eve 2020/21 and 2021/22, elevated levels have also been measured, but they are significantly lower than in previous years.
+
+```{r Observation of strong outliers and unsual patterns}
+#| message: false
+#| warning: false
+#| echo: false
+
+
+# Function to tag detect an outlier
+detect_outlier <- function(x) {
+  Quantile1 <- quantile(x, probs=.25, na.rm = T)
+  Quantile3 <- quantile(x, probs=.75, na.rm = T)
+  
+  IQR = Quantile3-Quantile1
+  x > Quantile3 + (IQR*4) | x < Quantile1 - (IQR*4)
+}
+
+# Function to tag observations with outliers
+tag_outlier <- function(dataframe,columns) {
+  dataframe <- dataframe %>%
+    mutate(pm25_outlier = F,
+           pm10_outlier = F,
+           O3_outlier = F,
+           NO2_outlier = F,
+           .after = NO2)
+  for (col in columns) {
+    dataframe[[paste0(col,'_outlier')]][detect_outlier(dataframe[[col]]) == T] <- T
+  }
+  return(dataframe)
+}
+
+
+# Getting data around the time the maximum value for NO2 was recorded
+max_outliers_NO2 <- airweather_by_used_stations %>%
+  mutate(messwerte = map(.x = messwerte, .f = tag_outlier,c("O3", "pm25", "pm10", "NO2"))) %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  filter(Station == "042 Neukölln") %>%
+  filter(date %within% interval(ymd("2017-02-10"),ymd("2017-02-20"))) %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  gather(key = "outlier_type", value = "outlier_val", 4:7) %>%
+  filter((pollutant == "pm25" & outlier_type == "pm25_outlier") | 
+           (pollutant == "pm10" & outlier_type == "pm10_outlier") | 
+           (pollutant == "O3" & outlier_type == "O3_outlier") | 
+           (pollutant == "NO2" & outlier_type == "NO2_outlier"))
+
+# Getting data around the nearly highest value for pm25 was recorded
+max_outliers_pm25 <- airweather_by_used_stations %>%
+  mutate(messwerte = map(.x = messwerte, .f = tag_outlier,c("O3", "pm25", "pm10", "NO2"))) %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  filter(Station == "171 Mitte") %>%
+  filter(date %within% interval(ymd("2022-11-03"),ymd("2022-11-12"))) %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  gather(key = "outlier_type", value = "outlier_val", 4:7) %>%
+  filter((pollutant == "pm25" & outlier_type == "pm25_outlier") | 
+           (pollutant == "pm10" & outlier_type == "pm10_outlier") | 
+           (pollutant == "O3" & outlier_type == "O3_outlier") | 
+           (pollutant == "NO2" & outlier_type == "NO2_outlier")) %>%
+  filter(pollutant %in% c("pm25", "pm10", "NO2"))
+
+# Getting data around the time the maximum value for pm10 was recorded
+max_outliers_pm10 <- airweather_traffic_df %>%
+  tag_outlier(c("O3", "pm25", "pm10", "NO2")) %>%
+  filter(Station == "143 Silbersteinstraße") %>%
+  filter(date %within% interval(ymd("2021-02-20"),ymd("2021-02-28"))) %>%
+  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  gather(key = "outlier_type", value = "outlier_val", 4:7) %>%
+  filter((pollutant == "pm25" & outlier_type == "pm25_outlier") | 
+           (pollutant == "pm10" & outlier_type == "pm10_outlier") | 
+           (pollutant == "O3" & outlier_type == "O3_outlier") | 
+           (pollutant == "NO2" & outlier_type == "NO2_outlier")) %>%
+  filter(pollutant %in% c("pm25", "pm10", "NO2"))
+
+# Visualization of values for NO2
+ggplot() +
+  geom_line(aes(x = date, y = concentration, colour = pollutant), data = max_outliers_NO2) +
+  geom_point(aes(x = date, y = concentration, colour = pollutant),data = max_outliers_NO2 %>% filter(outlier_val == T)) +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Date",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = expression('Maximum concentration of ' ~ NO[2] ~ 'recorded in our data (2017-02-15 / Neukölln)'),
+       colour = "Pollutant",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Visualization of values for pm25
+ggplot() +
+  geom_line(aes(x = date, y = concentration, colour = pollutant), data = max_outliers_pm25) +
+  geom_point(aes(x = date, y = concentration, colour = pollutant),data = max_outliers_pm25 %>% filter(outlier_val == T)) +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Date",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = expression('Very high concentration of ' ~ PM[2.5] ~ 'recorded in our data (2022-11-04 / Mitte)'),
+       colour = "Pollutant",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Visualization of values for pm10
+ggplot() +
+  geom_line(aes(x = date, y = concentration, colour = pollutant), data = max_outliers_pm10) +
+  geom_point(aes(x = date, y = concentration, colour = pollutant),data = max_outliers_pm10 %>% filter(outlier_val == T)) +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Date",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = expression('Maximum concentration of ' ~ PM[10] ~ 'recorded in our data (2017-02-24 / Silbersteinstraße)'),
+       colour = "Pollutant",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Remove not needed data
+remove(max_outliers_pm10,
+       max_outliers_pm25,
+       max_outliers_NO2)
+
+
+# Visualization of new year eve pollutant concentrations
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  group_by(date) %>%
+  summarise(pm25 = mean(pm25, na.rm = T),
+            pm10 = mean(pm10, na.rm = T),
+            O3 = mean(O3, na.rm = T),
+            NO2 = mean(NO2, na.rm = T)) %>%
+   mutate(day = day(date),
+         month = month(date),
+         year = year(date),
+         hour = hour(date)) %>%
+  filter((day == 31 & month == 12 & hour > 15) | (day == 1 & month == 1 & hour < 12)) %>%
+  mutate(newyear = ifelse(month == 12, paste0(year,"/",year+1), paste0(year-1,"/",year))) %>%
+  gather(key = "pollutant", value = "concentration", 2:5) %>%
+  ggplot(aes(x = date, y = concentration, colour = pollutant)) +
+  geom_line() +
+  facet_wrap(vars(newyear), scales = "free_x")+
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Date",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = "Average pollutant concentration on new year eve",
+       colour = "Pollutant",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+```
+
+### Observation of linear relationships and correlations
+
+A correlation matrix makes it easy to identify linear relationships between different variables. By combining air quality measurements, weather data, and, in the case of "traffic" stations, additional traffic data, general correlations can be seen. However, it quickly becomes clear that there may be differences between groups of stations and stations themselves. One station may be in the shade and protected from sunlight. Another station may be well protected from the wind. Therefore, depending on the individual conditions, the values may vary from station to station. However, these are aspects that cannot be explored in depth within the scope of this work. In the following, the correlation matrices for the respective station types are examined. As before, PM~10~, PM~2.5~ and NO~2~ are positively correlated. O~3~ is negatively correlated with all other pollutants. In the context of meteorological data, O~3~ is positively correlated with daily sunshine duration, temperature and dew point. O~3~ is negatively correlated with humidity. For all other pollutants, the same meteorological data show opposite linear correlations. Only wind speed is negatively correlated with all pollutants without exception. In addition, for the "traffic" stations, a positive linear correlation between NO~2~ and the number of vehicles recorded hourly at respective stations can be determined.
+
+```{r Obeservation of linear relationships and correlations}
+#| message: false
+#| warning: false
+#| echo: false
+
+# Correlation matrix showing linear relationships for weather and air quality
+# Station type: suburb
+airweather_by_used_stations %>%
+  filter(stationgroups == "suburb") %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  select(-date, -Station, -stationgroups, -winddirection_100m) %>%
+  correlate() %>%
+  shave() %>%
+  rplot(shape = 15, colors = c("red", "green"), print_cor = T) +
+  theme(axis.text.x = element_text(angle = 70, vjust = .95, hjust=1)) +
+  labs(title = "Correlation Matrix", subtitle = "Station type: Suburb",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, viz.berlin.de, open-meteo.com \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+# Correlation matrix showing linear relationships for weather and air quality
+# Station type: background
+airweather_by_used_stations %>%
+  filter(stationgroups == "background") %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  select(-date, -Station, -stationgroups, -winddirection_100m) %>%
+  correlate() %>%
+  shave() %>%
+  rplot(shape = 15, colors = c("red", "green"), print_cor = T) +
+  theme(axis.text.x = element_text(angle = 70, vjust = .95, hjust=1)) +
+  labs(title = "Correlation Matrix", subtitle = "Station type: Background",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, viz.berlin.de, open-meteo.com \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+
+# Correlation matrix showing linear relationships for weather and air quality
+# Station type: traffic
+airweather_traffic_df %>%
+  filter(stationgroups == "traffic") %>%
+  mutate(q_kfz_adj = (q_kfz_adj + lag(q_kfz_adj,2) + lag(q_kfz_adj,1))/3) %>%
+  select(-date, -Station, -O3, -stationgroups, -winddirection_100m, -q_pkw_mq_hr, -q_lkw_mq_hr) %>%
+  correlate() %>%
+  shave() %>%
+  rplot(shape = 15, colors = c("red", "green"), print_cor = T) +
+  theme(axis.text.x = element_text(angle = 70, vjust = .95, hjust=1)) +
+  labs(title = "Correlation Matrix", subtitle = "Station type: Traffic",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, viz.berlin.de, open-meteo.com \nOwn representation") +
+  theme(plot.title = element_text(face = "bold"))
+
+
+
+```
+
+## Pre-processing
+
+As part of the pre-processing, the data should be prepared in such a way that selected machine learning models achieve the best possible results.
+
+Next Steps:
+
+-   Transforming values for better relationships
+
+    -   Moving average amount of cars
+
+    -   Sum of precipitation for the last i.e. 10 hours
+
+    -   Changing wind direction in degrees to factor values giving i.e. 8 possible directions
+
+-   Removing strong outliers
+
+etc...
+
+```{r}
+#| include: false
+
+
+detect_outlier <- function(x) {
+  Quantile1 <- quantile(x, probs=.25, na.rm = T)
+  Quantile3 <- quantile(x, probs=.75, na.rm = T)
+  
+  IQR = Quantile3-Quantile1
+  x > Quantile3 + (IQR*1.5) | x < Quantile1 - (IQR*1.5)
+}
+
+# create remove outlier function
+remove_outlier <- function(dataframe,columns) {
+  for (col in columns) {
+    dataframe[[col]][detect_outlier(dataframe[[col]]) == T] <- NA
+  }
+  return(dataframe)
+}
+
+
+
+rose_breaks <- c(0, 360/32, (1/32 + (1:15 / 16)) * 360, 360)
+
+rose_labs <- c(
+  "North", "North-Northeast", "Northeast", "East-Northeast",
+  "East", "East-Southeast", "Southeast", "South-Southeast",
+  "South", "South-Southwest", "Southwest", "West-Southwest",
+  "West", "West-Northwest", "Northwest", "North-Northwest",
+  "North"
+)
+
+calc_moving_precip <- function(precipitation, x) {
+  zoo_precipitation <- zoo(precipitation)
+  moving_sum <- rollsum(zoo_precipitation, x, align = "right", fill = NA)
+  moving_sum_vector <- as.vector(moving_sum)
+  return(moving_sum_vector)
+}
+
+
+test2 <- airweather_traffic_df %>%
+  filter(Station == "174 Frankfurter Allee") %>%
+  mutate(q_kfz_adj = (q_kfz_adj + lag(q_kfz_adj,2) + lag(q_kfz_adj,1))/3) %>%
+  mutate(winddirection_100m = cut(
+      winddirection_100m,
+      breaks = rose_breaks,
+      labels = rose_labs,
+      right = FALSE,
+      include.lowest = TRUE)) %>%
+  mutate(precipitation_sum_60h = round(calc_moving_precip(precipitation, 60),4)) %>%
+  mutate(hour = as.factor(hour(date)),
+         weekday = as.factor(wday(date)),
+         month = as.factor(month(date)))
+
+
+```
+
+### Session info
+
+```{r Session info}
+#| echo: false
+sessionInfo()
+```
