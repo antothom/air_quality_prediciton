@@ -1,14 +1,18 @@
 ---
 title: "Data Collection"
+execute:
+  message: false
+  warning: false
 author: "Antoine Thomas"
 date: 2023-08-03
 format:
   html: 
+    embed-resources: true
     code-tools:
       source: true
       toggle: true
       caption: "Show code"
-editor: visual
+editor: source
 theme:
   light: flatly
   dark: darkly
@@ -27,12 +31,10 @@ library(ggmap)
 
 Data collection involves identifying and consolidating the data sources required. For air quality (AQ) prediction, historical data on air pollutants are the most important. In addition, coherent data can be brought in. AQ is known to be strongly influenced by the local weather, but also by factors such as traffic intensity, local road construction sites, ongoing construction projects or industrial enterprises operating in the surrounding area. AQ monitoring data, being particulate matter (PM~2.5~/PM~10~), ozone (O~3~) and nitrogen dioxide (NO~2~), from the city of Berlin and weather data from the open source provider *open-meteo.com* were selected as primary data sources. In addition, data from the Berlin traffic detection (*Berlin Open Data*) were included.
 
-
 ### Reading in air quality monitoring data
 
 ```{r Air quality monitoring data}
-#| message: false
-#| warning: false
+
 # Reading in the master data for air quality measurement stations
 airquality_stations <- GET("https://luftdaten.berlin.de/api/stations") %>% 
   parse_json(simplifyVector = T) %>% 
@@ -114,18 +116,13 @@ remove(values_pm25,
 After the import process, a data set `airquality_df` with AQ data for the period from January 2016 to April 2023 is available. In addition, a master data set `monitoring_stations` is available, which contains basic and general information about the various monitoring stations in Berlin.
 
 ```{r glimpse air quality data set}
-#| message: false
-#| warning: false
 glimpse(airquality_df)
 glimpse(airquality_stations)
 ```
 
-
 ### Reading in weather data
 
 ```{r Weather data}
-#| message: false
-#| warning: false
 # Variables to import:
 # - hourly: temperature, humidity, dewpoint, surface pressure, precipitation, 
 # windspeed, winddirection
@@ -178,13 +175,9 @@ After the import process, a data set `weather_df` with hourly and daily weather 
 glimpse(weather_df)
 ```
 
-
 ### Reading in traffic data
 
 ```{r Traffic Data}
-#| message: false
-#| warning: false
-
 # Reading in traffic detector master data
 traffic_detectors <- readxl::read_xlsx("Daten/Verkehrsdaten/Stammdaten_Verkehrsdetektion.xlsx") %>%
   select(MQ_KURZNAME, # mq = Messquerschnitt
@@ -239,14 +232,11 @@ glimpse(traffic_df)
 glimpse(traffic_detectors)
 ```
 
-
 ### Gathering and exporting data
 
 In order to make effective use of the imported data, it is necessary to combine and merge individual data sets. In particular, weather data must be combined with air quality data because they will always be used together in further analysis. Traffic data is not combined with air quality or weather data in the data collection step. The first step is to identify individual air quality monitoring stations that could be considered for such a link.
 
 ```{r Gathering/Exporting data}
-#| message: false
-#| warning: false
 
 # Joining air quality data with weather data
 air_weather_df <- airquality_df %>%
@@ -265,47 +255,6 @@ write.csv2(airquality_stations, file = "Daten/DataCollection/airquality_stations
 ```
 
 After the gathering process, a data set `air_weather_df` combining air quality measurement data and weather data is available. This data set is exported as .csv for usage within the following analysis. The previously collected data such as `traffic_df`, `traffic_detectors` and `airquality_stations` are exported as well.
-
-
-### Illustration of air quality monitoring stations and traffic sensors
-
-```{r Illustration air quality and traffic sensors}
-#| message: false
-#| warning: false
-#| echo: false
-
-# Get map from stamenmaps.com
-berlin_map <- get_stamenmap(
-  bbox = c(left=13.1987, right = 13.5662, bottom = 52.4182, top = 52.6030),
-  zoom = 12,
-  maptype = "terrain-lines"
-)
-
-# aggregating locations of air quality stations and traffic sensors
-points <- traffic_detectors %>%
-  select(lng, lat) %>%
-  mutate(type = "Traffic Detector") %>%
-  rbind(airquality_stations %>%
-  select(lng, lat) %>%
-  mutate(type = "Air Quality Station"))
-
-# Printing Map 
-ggmap(berlin_map) +
-  geom_point(aes(x = lng, y = lat, colour = type), shape = 1,size = 1.5,colour = "black", data = points) +
-  geom_point(aes(x = lng, y = lat, colour = type), data = points, size = 1) +
-  scale_color_brewer(palette = "Set1") +
-  theme_bw() +
-  ggtitle("Air quality stations and traffic detectors in Berlin") +
-  theme(legend.title = element_blank(),
-        plot.title = element_text(face = "bold"),
-        axis.title = element_blank(),
-        axis.ticks = element_blank(),
-        axis.text = element_blank())
-
-# Removing not needed data
-remove(berlin_map,
-       points)
-```
 
 ### Session info
 

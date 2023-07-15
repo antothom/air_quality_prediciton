@@ -1,14 +1,18 @@
 ---
-title: "Explorative data analysis and pre-processing"
+title: "Explorative data analysis"
+execute:
+  message: false
+  warning: false
 author: "Antoine Thomas"
 date: 2023-08-03
 format:
   html: 
+    embed-resources: true
     code-tools:
       source: true
       toggle: true
       caption: "Show code"
-editor: visual
+editor: source
 theme:
   light: flatly
   dark: darkly
@@ -21,17 +25,18 @@ library(lubridate)
 library(knitr)
 library(zoo)
 library(corrr)
+library(furrr)
+library(ggmap)
 ```
 
 ## Explorative data analysis
 
-Exploratory data analysis involves examining the data sets imported as part of the data collection process. The first step is to understand the datasets and their variables, gain basic insights, and perform tasks such as adjusting data types if necessary. Another step is to investigate missing observations and how to deal with them. Finally, the actual analysis begins with examining distributions by calculating summary statistics and plots in the form of box plots, histograms, etc. Temporal trends and anomalies as well as outliers can be identified. Correlations, especially linear relationships between pollutant concentrations and weather or traffic data, are then examined.
+Exploratory data analysis involves examining the data sets imported as part of the data collection process. The first step is to understand the datasets and their variables, gain basic insights, and perform tasks such as computing CAQI-Index values. Another step is to investigate missing observations and how to deal with them. Finally, the actual analysis begins with examining distributions by calculating summary statistics and creating visualizations. Temporal trends and anomalies as well as outliers can be identified. Correlations, especially linear relationships between pollutant concentrations and weather or traffic data, are then examined.
 
 ### Loading data sets from data collection
 
 ```{r Loading data}
-#| message: false
-#| warning: false
+#| results: hide
 
 # Import of data sets which have been exported at the end of data collection
 air_weather_df <- read_csv2(file = "Daten/DataCollection/air_weather_df.csv") %>%
@@ -64,11 +69,74 @@ airweather_by_station <- tibble(Station = airquality_station_groups %>% pull(nam
 
 According to the data available to us, there are 20 air quality monitoring stations in Berlin, evenly distributed throughout the city and its immediate surroundings. These can be divided into 3 categories: "Suburb", "Background" and "Traffic". "Suburb" stations are located in the suburbs of Berlin, some of them in forests. "Background" includes stations that are located in the city, but collect typical measurements for residential areas. "Traffic" stations are located in the immediate vicinity of a major road, and their readings are likely to be strongly influenced by traffic.
 
+```{r map visualization of AQ stations and traffic detectors}
+#| echo: false
+
+# aggregating locations of air quality stations and traffic sensors
+points <- traffic_detectors %>%
+  select(lng, lat) %>%
+  mutate(type = "Traffic Detector") %>%
+  rbind(airquality_stations %>%
+  mutate(type = paste0("Air Quality Station - ", stationgroups)) %>%
+    select(lng, lat, type))
+
+# Get map from stamenmaps.com
+berlin_map <- get_stamenmap(
+  bbox = c(left=min(points$lng)-.01, right = max(points$lng)+.01, bottom = min(points$lat)-.01, top = max(points$lat)+.01),
+  zoom = 12,
+  maptype = "terrain-lines"
+)
+
+# Printing Map 
+ggmap(berlin_map) +
+  geom_point(aes(x = lng, y = lat, colour = type), shape = 1,size = 1.5,colour = "black", data = points) +
+  geom_point(aes(x = lng, y = lat, colour = type), data = points, size = 1) +
+  scale_color_manual(values=c("#F5C93D", "#48D737", "#F5182E", "#566EF5")) +
+  theme_bw() +
+  theme(legend.title = element_blank(),
+        plot.title = element_text(face = "bold"),
+        axis.title = element_blank(),
+        axis.ticks = element_blank(),
+        axis.text = element_blank()) +
+  labs(title = "Air quality stations and traffic detectors in Berlin", caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation")
+
+# Removing not needed data
+remove(berlin_map,
+       points)
+```
+
+### Overview of Datasets
+
+The following data sets contain the essential Data which will be used in the context of the analysis in this work. Those are on one side, as already mentioned, pollutant concentration data, weather data as well as traffic data. All data sets contain records ranging from January 2017 to April/May 2023.
+
+#### Pollutant Measurement and Weather Data
+
+The first imported dataset contains weather and air pollution measurements recorded at various stations across Berlin. The recorded parameters include the date and time of the respective measurements, a station name, a station category as 'traffic', 'suburb' or 'background', two levels of particulate matter (PM2.5 and PM10), ozone (O3) and nitrogen dioxide (NO2) concentrations. Weather conditions are described by dew point temperature at 2 metres, amount of precipitation, relative humidity at 2 metres, surface air pressure, temperature at 2 metres, wind direction at 100 metres, wind speed at 100 metres and duration of sunshine.
+
+```{r overview air_weather_df}
+#| echo: false
+
+glimpse(air_weather_df)
+```
+
+#### Traffic Data
+
+The imported data set with traffic data provides measurements from various stations across Berlin. Each entry includes the station's identifier, the date and time of the measurement, and a quality indicator for the collected data.
+
+The traffic data include the hourly count and average speed in kilometers per hour of vehicles, both overall and broken down by cars and trucks. It thus provides a detailed view of the city's traffic flow, differentiating between cars and trucks.
+
+```{r overview traffic_df}
+#| echo: false
+
+glimpse(traffic_df)
+```
+
 ### Observation and handling of missing values
 
+When looking for missing pollutant values, it is noticeable that some stations provide very reliable data, while others provide very unreliable or no data at all. "Traffic" type stations hardly record data for O~3~, although this shouldn't be too much of a problem, as this pollutant is not relevant for the calculation of the CAQI index at "traffic" stations (see section 3.3). Some " suburb " stations are also characterised by missing data for PM~2.5~ and PM~10~. For some other stations up to almost 70% of the values are missing for the period January 2017 to May 2023. The decision to include stations in further analysis was based on the proportion of missing data points for each pollutant. If a station has more than 25% missing observations for more than two pollutants, it is excluded from our dataset. The following table shows the relative proportion of missing values and the decision to exclude or not to exclude a station.
+
 ```{r Observation of missing values}
-#| message: false
-#| warning: false
+#| results: hide
 
 # Function to compute the relative amount of missing values (NA) for each station and pollutant 
 calc_na_amount <- function(st, df) {
@@ -102,6 +170,11 @@ rel_na_amount_by_station <- airweather_by_station %>%
   mutate(missing_agg = pmap(list(missing_pm25,missing_pm10,missing_O3,missing_NO2),c)) %>%
   mutate(eliminate = map(missing_agg, classify_eliminate),
          eliminate = as.logical(eliminate))
+
+
+rel_na_amount_by_station %>%
+  select(Station, pm25, pm10, O3, NO2, eliminate) %>%
+  kable(caption = "Relative Amount of missing values for air quality stations and deicison whether to eliminate station or not.")
 
 
 # Removing not needed functions
@@ -147,23 +220,19 @@ remove(stations_values_complete,
 
 ```
 
-It is noticeable that some stations provide very reliable data, while others provide very unreliable or no data at all. In particular, "traffic" type stations do not record data for O~3~. Some "suburb" stations are also characterized by missing data for PM~2.5~ and PM~10~. For some other stations, up to almost 70% of the values are missing over the period from January 2017 to May 2023. The decision to include stations in further analysis was based on the proportion of missing data points for each pollutant. If a station has more than 25% missing observations for more than two pollutants, it is excluded from our dataset. The following table shows the relative proportion of missing values and the decision to exclude or not to exclude a station.
-
-```{r}
+```{r print stations and exclude information}
 #| echo: false
 
 # Displaying data frame as kable table
 rel_na_amount_by_station %>%
   select(Station, pm25, pm10, O3, NO2, eliminate) %>%
-  kable()
+  kable(caption = "\nSource: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de")
 
 ```
 
-The handling of missing data is unclear. Simply deleting all tuples with missing values can result in a significant amount of data being lost. Although for some pollutants there are longer periods where no measurements are available, there are also very short periods of a few hours in the datasets where the data probably could not be collected correctly. Estimating data over a longer period of time is complicated because measurements may vary irregularly over many consecutive hours or days. In such a case, estimation with e.g. linear methods would run the risk of estimating data that would later do more harm than good as training data. However, over very short periods of time, the probability of large fluctuations is greatly reduced. In such a situation, it would be useful to estimate the missing data. Therefore, up to 4 consecutive missing observations are estimated using interpolated values. In this way, the proportion of missing observations can be reduced to a certain extent without running the risk of neglecting large fluctuations in the measured values.
+The handling of missing pollutant data is unclear. Simply deleting all observations with missing values can result in a significant amount of data being lost. Although for some pollutants there are longer periods where no measurements are available, there are also very short periods of a few hours in the datasets where the data probably could not be collected correctly. Estimating data over a longer period of time is complicated because measurements may vary irregularly over many consecutive hours or days. In such a case, estimation with e.g. linear methods would run the risk of estimating data that would later do more harm than good as training data. However, over very short periods of time, the probability of large fluctuations is greatly reduced. In such a situation, it would be useful to estimate the missing data. Therefore, up to a maximum of 4 consecutive missing observations are estimated using interpolated values. In this way, the proportion of missing observations can be reduced to a certain extent without running too great of a risk of neglecting large fluctuations in the measured values.
 
 ```{r Pollutant interpolation}
-#| message: false
-#| warning: false
 
 # Function to approximate values by interpolation for given columns in a dataframe 
 estimate_by_interpolation <- function(df, columns, maximum_gap) {
@@ -193,48 +262,145 @@ airweather_by_used_stations <- airweather_by_used_stations %>%
 
 ```
 
-### Exploration of pollutant distributions and trends
+In order to observe the missing traffic data, the first step was to restrict the data to a large extent. For our analysis, only traffic monitoring stations located in the immediate vicinity of used "traffic" type stations were selected. These were identified through a detailed examination. Between 2 and 3 traffic sensors were identified at each of the 4 air quality stations. In total, data from 9 traffic sensors are considered.
 
-To get a concrete insight into the air quality measurement data, the first step is to look at their distributions. Particular attention is paid to the mean and median values. For NO~2~, the mean value for all stations considered is 22.1 μg/m^3^. PM~10~ follows with a mean of 19.9 μg/m^3^. O~3~ is the most concentrated pollutant with an average of 49.0 μg/m^3^. The least concentrated is PM~2.5~ with an average of 13.2 μg/m^3^. The mean for PM~10~, PM~2.5~ and O~3~ is about 2 μg/m^3^ above the median. For NO~2~, the deviation is somewhat larger at more than 5 μg/m^3^. It is particularly noticeable that all pollutants show extremely strong outliers. Especially PM~10~ stands out with a maximum value of 1501 μg/m^3^.
+The traffic data set does contain some anomalies, such as records showing a speed of -1 km/h, which suggests missing or anomalous data. It was found that a speed reading of -1 km/h was in most cases due to the fact that no vehicles were recorded at a station at a particular time. When looking more closely at the speed indications with -1 km/h, hardly any observations could be found where the number of recorded vehicles was greater than 0. Therefore, it was decided that further consideration is not necessary, as the speed indication is not taken into account in the further analysis.
 
-```{r Exploration of pollutant distributions 1}
-#| message: false
-#| warning: false
+```{r looking at anomalies in traffic data}
+#| include: false
+
+# Vector containing all identifiers of traffic sensors we will consider in our analysis
+used_traffic_sensors <- c("TE386", "TE395", "TE014", "TE530", "TE531", "TE385", "TE384", "TE393", "TE394")
+
+# Only 12 anormal observations can be found in the dataset Those represent less than 0.001% of the observations  
+traffic_df %>%
+  filter(cs_shortname %in% used_traffic_sensors) %>%
+  filter((v_lkw_mq_hr == -1 & q_lkw_mq_hr != 0) | (v_pkw_mq_hr == -1 & q_pkw_mq_hr != 0) | (v_kfz_mq_hr == -1 & q_kfz_mq_hr != 0))
+
+
+remove(used_traffic_sensors)
+```
+
+### Calculation of CAQI-Index
+
+The calculation of the CAQI-Index is based on the theory explained in the associated work. The pollutant concentrations are combined into a single index that can be easily understood and compared. Firstly, the sub-index for individual pollutants is calculated, then a combined index is computed. The combined index is the maximum of the individual subindex values, reflecting the pollutant with the highest concentration relative to its own threshold. Once the index is calculated, it is then classified into one of several qualitative categories (e.g., 'very low', 'low', 'medium', 'high', 'very high'), which provide a more intuitive understanding of the air quality.
+
+```{r caqi computation}
+
+# Compute the CAQI value for a single pollutant
+calculcate_single_aqi <- function(C, C_low, C_high, I_low, I_high) {
+  round(((I_high - I_low) / (C_high - C_low)) * (C - C_low) + I_low, 0)
+}
+
+# Compute the combined CAQI value
+compute_aqi <- function(NO2 = 0, PM10 = 0, O3 = 0, PM25 = 0) {
+  if (!is.numeric(NO2)) {
+    NO2 <- 0
+  }
+  if (!is.numeric(PM10)) {
+    PM10 <- 0
+  }
+  if (!is.numeric(O3)) {
+    O3 <- 0
+  }
+  if (!is.numeric(PM25)) {
+    PM25 <- 0
+  }
+
+  NO2_index <- case_when(
+    between(NO2, 0, 49) ~ calculcate_single_aqi(NO2, 0, 49, 0, 24),
+    between(NO2, 50, 99) ~ calculcate_single_aqi(NO2, 50, 99, 25, 49),
+    between(NO2, 100, 199) ~ calculcate_single_aqi(NO2, 100, 199, 50, 74),
+    between(NO2, 200, 400) ~ calculcate_single_aqi(NO2, 200, 400, 75, 100),
+    NO2 > 400 ~ 101
+  )
+  PM10_index <- case_when(
+    between(PM10, 0, 24) ~ calculcate_single_aqi(PM10, 0, 24, 0, 24),
+    between(PM10, 25, 49) ~ calculcate_single_aqi(PM10, 25, 49, 25, 49),
+    between(PM10, 50, 89) ~ calculcate_single_aqi(PM10, 50, 89, 50, 74),
+    between(PM10, 90, 180) ~ calculcate_single_aqi(PM10, 90, 180, 75, 100),
+    PM10 > 180 ~ 101
+  )
+  O3_index <- case_when(
+    between(O3, 0, 59) ~ calculcate_single_aqi(O3, 0, 49, 0, 24),
+    between(O3, 60, 119) ~ calculcate_single_aqi(O3, 50, 99, 25, 49),
+    between(O3, 120, 179) ~ calculcate_single_aqi(O3, 100, 199, 50, 74),
+    between(O3, 180, 240) ~ calculcate_single_aqi(O3, 200, 399, 75, 100),
+    O3 > 240 ~ 101
+  )
+  PM25_index <- case_when(
+    between(PM25, 0, 14) ~ calculcate_single_aqi(PM25, 0, 49, 0, 24),
+    between(PM25, 15, 29) ~ calculcate_single_aqi(PM25, 50, 99, 25, 49),
+    between(PM25, 30, 54) ~ calculcate_single_aqi(PM25, 100, 199, 50, 74),
+    between(PM25, 55, 110) ~ calculcate_single_aqi(PM25, 200, 399, 75, 100),
+    PM25 > 110 ~ 101
+  )
+  return(max(c(NO2_index, PM10_index, O3_index, PM25_index)))
+}
+
+# Function to Compute the Qualitative Name of respective CAQI-Index values
+get_qualitative_name <- function(caqi_index) {
+  case_when(
+    caqi_index %in% c(0:24) ~ "very low",
+    caqi_index %in% c(25:49) ~ "low",
+    caqi_index %in% c(50:74) ~ "medium",
+    caqi_index %in% c(75:100) ~ "high",
+    caqi_index > 100 ~ "very high"
+  )
+}
+
+
+# Compute all CAQI-Index values and qualitative names
+plan(multisession, workers = 4)
+air_weather_df <- airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  mutate(
+    caqi_index = unlist(future_pmap(
+      .l = list(
+        if_else(is.na(NO2), 0, NO2),
+        if_else(is.na(pm10), 0, pm10),
+        if_else(is.na(O3), 0, O3),
+        if_else(is.na(pm25), 0, pm25)
+      ),
+      compute_aqi
+    )),
+    caqi_type = get_qualitative_name(caqi_index),
+    .after = NO2
+  )
+
+# Grouping air quality monitoring data by station
+airweather_by_used_stations <- airweather_by_used_stations %>%
+  mutate(messwerte = map(Station, function(x) air_weather_df %>% filter(Station == x)))
+
+```
+
+### Temporal Trends in Pollutants and CAQI index values
+
+To get a concrete insight into the air quality measurement data, the first step is to look at their distributions. Particular attention is paid to the mean and median values. For NO~2~, the mean value for all stations considered is 22.1 μg/m^3^. PM~10~ follows with a mean of 19.9 μg/m^3^. O~3~ is the most concentrated pollutant with an average of 49.0 μg/m^3^. The least concentrated is PM~2.5~ with an average of 13.2 μg/m^3^. The mean for PM~10~, PM~2.5~ and O~3~ is about 2 μg/m^3^ above the median. For NO~2~ the deviation is somewhat larger at more than 5 μg/m^3^. It is particularly noticeable that all pollutants show extremely strong outliers. Especially PM~10~ stands out with a maximum value of 1501 μg/m^3^. The CAQI index has mean and median values of 27.0 and 25.0. There are some "outliers" with a value of 101.0, which is the maximum value that CAQI index values can have.
+
+```{r Exploration of distributions 1}
+#| echo: false
 
 # Distribution of pollutant concentration by pollutant
 airweather_by_used_stations %>%
   pull(messwerte) %>%
   bind_rows() %>%
-  select(pm25, pm10, O3, NO2) %>%
+  select(pm25, pm10, O3, NO2, caqi_index) %>%
   summary()
+
 ```
 
-If the station types are considered separately, the influence of the location and position of the stations on the measured values becomes clear. For NO~2~, PM~10~ and PM~2.5~ it is apparent that the values are lowest in suburban areas and highest by roads. Only O~3~ is higher in the suburbs than next to roads. The urban background stations are on average between the other two station types for all pollutants.
 
-```{r Exploration of pollutant distributions 2}
-#| message: false
-#| warning: false
-#| echo: false
+```{r Exploration of distributions 2}
+#| include: false
 
-# Distribution of pollutant concentration by pollutant and station
-pollutant_distributions_by_station <- airweather_by_used_stations %>%
-  pull(messwerte) %>%
-  bind_rows() %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
-  select(date, Station, pollutant, concentration, stationgroups) %>%
-  group_by(Station, pollutant, stationgroups) %>%
-  summarise(min = min(concentration, na.rm = T),
-            mean = mean(concentration, na.rm = T),
-            median = median(concentration, na.rm = T),
-            max = max(concentration, na.rm = T)) %>%
-  na.omit() %>%
-  ungroup()
 
 # Distribution of pollutant concentration by pollutant and station type
-pollutant_distributions_by_stationgroups <- airweather_by_used_stations %>%
+airweather_by_used_stations %>%
   pull(messwerte) %>%
   bind_rows() %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  gather(key = "pollutant", value = "concentration", 4:8) %>%
   select(date, Station, pollutant, concentration, stationgroups) %>%
   group_by(stationgroups, pollutant) %>%
   summarise(min = min(concentration, na.rm = T),
@@ -243,15 +409,20 @@ pollutant_distributions_by_stationgroups <- airweather_by_used_stations %>%
             max = max(concentration, na.rm = T)) %>%
   ungroup()
 
+```
 
+Looking at each type of station separately, the influence of the location and position of the station on the measured values becomes clearer. For NO~2~, PM~10~ and PM~2.5~ it can be seen that the values are lowest in suburban areas and highest at roads. Only O~3~ is higher in the suburbs than near roads. Urban background stations are on average between the other two station types for all pollutants. The CAQI index values seem to be similar at each station type (slightly higher at the suburban station), which makes sense and is in line with the aim of the index, which is to make different stations comparable.
+
+```{r Exploration of distributions 3}
+#| echo: false
 
 # Boxplot visualization of the pollutant distribution by station type
 airweather_by_used_stations %>%
   pull(messwerte) %>%
   bind_rows() %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  gather(key = "pollutant", value = "concentration", 4:8) %>%
   select(date, Station, pollutant, concentration, stationgroups) %>%
-  mutate(stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic"))) %>%
+  mutate(stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic", "caqi_index"))) %>%
   ggplot(aes(x = pollutant, y = concentration, colour = stationgroups)) +
   geom_boxplot() +
   scale_y_log10() +
@@ -259,17 +430,16 @@ airweather_by_used_stations %>%
   scale_colour_brewer(palette = "Dark2") +
   labs(x = "Pollutant",
        y = expression(Pollutant~concentration~(μg/m^{"3"}~-~log-scaled)),
-       title = "Distribution of pollutant concentrations by station type",
+       title = "Distribution of pollutant concentrations/CAQI index by station type",
        colour = "Station type",
        caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(face = "bold", size = "12"))
+
 ```
 
-The differentiation between weekdays and weekends shows clear differences in the mean pollutant concentrations for all station types. For all pollutants except O~3~, higher values are found on weekdays. O~3~, on the other hand, is measured with higher values on weekends. The difference between the station types is the fact that the differences between weekdays and weekend days are significantly greater along roads and in the city than in suburban areas.
+The differentiation between weekdays and weekends shows clear differences in the mean pollutant concentrations for all station types. For all pollutants except O~3~, higher values are found on weekdays. O~3~, on the other hand, is measured with higher values on weekends. The difference between the station types is the fact that the differences between weekdays and weekend days are significantly greater along roads and in the city than in suburban areas. For suburban and background stations, average CAQI index values appear to be very similar throughout the week. At traffic stations, significantly higher average index values can be observed on weekdays than on weekends.
 
-```{r Exploration of pollutant distributions 3}
-#| message: false
-#| warning: false
+```{r Exploration of distributions 4}
 #| echo: false
 
 # Boxplot visualization of the pollutant distribution by station type
@@ -277,11 +447,11 @@ The differentiation between weekdays and weekends shows clear differences in the
 airweather_by_used_stations %>%
   pull(messwerte) %>%
   bind_rows() %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
+  gather(key = "pollutant", value = "concentration", 4:8) %>%
   select(date, Station, pollutant, concentration, stationgroups) %>%
   mutate(weekday = wday(date),
          day_type = ifelse(weekday %in% c(1,7), "Weekend", "Weekday"),
-         stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic"))) %>%
+         stationgroups = factor(stationgroups, levels = c("suburb", "background", "traffic", "caqi_index"))) %>%
   ggplot(aes(x = pollutant, y = concentration, colour = day_type)) +
   geom_boxplot() +
   facet_wrap(~stationgroups) +
@@ -290,15 +460,62 @@ airweather_by_used_stations %>%
   scale_colour_brewer(palette = "Dark2") +
   labs(x = "Pollutant",
        y = expression(Pollutant~concentration~(μg/m^{"3"}~-~log-scaled)),
-       title = "Distribution of pollutant concentrations by station type for weekdays and weekend days",
+       title = "Distribution of pollutant concentrations/CAQI index by station type for weekdays and weekend days",
        colour = "Day type",
        caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(face = "bold", size = "12"),
+        axis.text = element_text(size = 7))
 ```
 
-Looking at the average pollutant concentrations over the course of the day, the above trends can be examined in more detail. It is noticeable that for NO~2~, especially on weekdays, there is a strong increase in concentration in the course of the morning. A similar but much weaker increase can be observed in the late afternoon. As this observation is mainly visible for the stations of the "traffic" type, it can be assumed that these are emissions from rush-hour traffic. The fact that these variations are not visible on weekends reinforces this assumption. It can also be seen that the increase of NO2 in the morning hours leads to a strong decrease of O~3~ measurements. However, this decrease is not visible in the afternoon. This phenomenon will be examined in more detail below. For PM~10~ and PM~2.5~, an increase of the measured values in the morning is also observed on weekdays, which decreases continuously during the day. On weekends, there is no significant change in particulate matter levels.
+When distinguishing between the seasons, clear differences can be seen, especially for NO~2~ and O~3~. While for NO~2~ significantly lower values are measured in spring and summer than during winter and fall, the opposite effect can be observed for O~3~. Here the values are generally higher in spring and summer than during winter and fall. In the light of previous observations comparing NO~2~ and O~3~, a counteracting effect may be suspected here. For PM~10~ and PM~2.5~, values tend to be somewhat lower in summer and spring than during winter and fall. For CAQI index values, one can observe significantly higher values in spring and summer than during fall and winter.
 
-```{r Exploration of pollutant distributions 4}
+```{r Exploration of distributions 5}
+#| echo: false
+
+# Function to define a season for given date
+getSeason <- function(dates) {
+  WS <- as.Date("2020-12-21", format = "%Y-%m-%d") # Winter Solstice
+  SE <- as.Date("2020-03-20",  format = "%Y-%m-%d") # Spring Equinox
+  SS <- as.Date("2020-06-20",  format = "%Y-%m-%d") # Summer Solstice
+  FE <- as.Date("2020-09-22",  format = "%Y-%m-%d") # Fall Equinox
+  
+  # Convert dates from any year to 2023 dates
+  d <- as.Date(strftime(dates, format="2020-%m-%d"))
+  
+  ifelse (d >= WS | d < SE, "Winter",
+          ifelse (d >= SE & d < SS, "Spring",
+                  ifelse (d >= SS & d < FE, "Summer", "Fall")))
+}
+
+
+
+# Visualization of average pollutant concentration depending on the season
+airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  mutate(season = getSeason(date)) %>%
+  gather(key = "pollutant", value = "concentration", 4:8) %>%
+  select(date, Station, pollutant, concentration, season) %>%
+  mutate(season = factor(.$season, levels = c("Winter", "Spring", "Summer", "Fall"))) %>%
+  ggplot(aes(x = pollutant, y = concentration, colour = season)) +
+  geom_boxplot() +
+  scale_y_log10() +
+  theme_bw() +
+  scale_colour_brewer(palette = "Dark2") +
+  labs(x = "Pollutant",
+       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
+       title = "Distribution of pollutant concentration/CAQI index by season",
+       colour = "Season",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
+  theme(plot.title = element_text(face = "bold", size = "12"))
+
+```
+
+#### Patterns in Pollutant Concentrations Over the Course of a Day
+
+Looking at the average pollutant concentrations over the course of the day, the already mentioned temporal trends are examined in more detail. It is noticeable that for NO~2~, especially on weekdays, there is a strong increase in concentration during morning hours. A similar but much weaker increase can be observed in the late afternoon. As this observation is mainly visible for the stations of the "traffic" type, one can believe that these are emissions from rush-hour traffic. The fact that these variations are not visible on weekends reinforces this assumption. It can also be seen that the increase of NO2 in the morning hours leads to a strong decrease of O~3~ measurements. However, this decrease is not visible in the afternoon. This phenomenon will be examined in more detail below. For PM~10~ and PM~2.5~, an increase of the measured values in the morning is also observed on weekdays, which decreases continuously during the day. On weekends, there is no significant change in particulate matter levels.
+
+```{r Exploration of distributions 6}
 #| message: false
 #| warning: false
 #| echo: false
@@ -358,67 +575,46 @@ airweather_by_used_stations %>%
   theme(plot.title = element_text(face = "bold"))
 ```
 
-When distinguishing between the seasons, clear differences can be seen, especially for NO~2~ and O~3~. While for NO~2~ significantly lower values are measured in spring and summer than in winter and fall, the opposite effect can be observed for O~3~. Here the values are generally higher in spring and summer than in winter and fall. In the light of previous observations comparing NO~2~ and O~3~, a counteracting effect may be suspected here. For PM~10~ there is no real seasonal difference. However, PM~2.5~ values tend to be somewhat lower in summer and spring than during winter and fall.
+### Relationships between Pollutants, Weather Variables, and Traffic
 
-```{r Exploration of pollutant distributions 5}
-#| message: false
-#| warning: false
+#### Trends in Essential Weather Variables
+
+By looking at the monthly trends in essential weather variables it can be observed that the temperature at 2 meters shows a clear seasonal pattern. With lower temperatures during the winter period (January to March and October to December) and significantly higher temperatures in the summertime (April to September). The CAQI index appears to have a negative correlation with temperature. It has higher values in months with low temperatures and lower values during months with higher temperatures. This suggesting that air quality tends to be worse when it's temperatures are low and could be due to factors such as increased emissions from heating and less dispersion of pollutants due to stable weather conditions in winter. The wind speed at 100 meters appears to be higher during winter periods and spring months (January to May) and lower in the summertime and fall months (June to December). The CAQI index shows a somewhat opposite trend to wind speed. It is lower when the wind speed is high and vice versa. This suggests that wind can help disperse pollutants and possibly improve air quality. The amount of precipitation is relatively low in the winter months (January to March), starts to increase in the spring (April to June), peaks during summer months (July to September), and decreases during fall (October to December). The CAQI index doesn't show a clear relationship with precipitation. It seems to be relatively high during months with both low and high precipitation.
+
+```{r Trends in essential weather variables}
 #| echo: false
 
-# Function to define a season for given date
-getSeason <- function(dates) {
-  WS <- as.Date("2020-12-21", format = "%Y-%m-%d") # Winter Solstice
-  SE <- as.Date("2020-03-20",  format = "%Y-%m-%d") # Spring Equinox
-  SS <- as.Date("2020-06-20",  format = "%Y-%m-%d") # Summer Solstice
-  FE <- as.Date("2020-09-22",  format = "%Y-%m-%d") # Fall Equinox
-  
-  # Convert dates from any year to 2023 dates
-  d <- as.Date(strftime(dates, format="2020-%m-%d"))
-  
-  ifelse (d >= WS | d < SE, "Winter",
-          ifelse (d >= SE & d < SS, "Spring",
-                  ifelse (d >= SS & d < FE, "Summer", "Fall")))
-}
-
-
-
-# Visualization of average pollutant concentration depending on the season
+# Visualization of essential weather variable trends and caqi index 
 airweather_by_used_stations %>%
   pull(messwerte) %>%
   bind_rows() %>%
-  mutate(season = getSeason(date)) %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
-  select(date, Station, pollutant, concentration, season) %>%
-  mutate(season = factor(.$season, levels = c("Winter", "Spring", "Summer", "Fall"))) %>%
-  ggplot(aes(x = pollutant, y = concentration, colour = season)) +
-  geom_boxplot() +
-  scale_y_log10() +
+  select(date, caqi_index, temperature_2m, precipitation, windspeed_100m) %>%
+  rename("CAQI Index" = caqi_index,
+         "Temperature (°C)" = temperature_2m,
+         "Precipitation" = precipitation,
+         "Wind Speed (km/h)" = windspeed_100m) %>%
+  gather(key = "variable", value = "value", 2:5) %>%
+  mutate(month = month(date)) %>%
+  group_by(month, variable) %>%
+  summarise(avg_value = mean(value, na.rm = T)) %>%
+  ggplot(aes(x = month, y = avg_value)) +
+  geom_line() +
+  facet_wrap(~variable, scales = "free_y") +
   theme_bw() +
-  scale_colour_brewer(palette = "Dark2") +
-  labs(x = "Pollutant",
-       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-       title = "Average pollutant concentration by season",
-       colour = "Season",
-       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"))
-
+  scale_x_continuous(breaks = seq(0, 12, 1)) +
+  labs(x = "Month", y = "Average Value", 
+       title = "Monthly trends in essential weather variables and CAQI index",
+       caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berin, open-meteo.com \nOwn representation") +
+  theme(plot.title = element_text(face = "bold", size = 12))
+  
 ```
 
-*Missing: Explanation Relation O3 and NO2*
+#### Traffic Flow Trends and Relations
 
-### Combining pollutant concentration with traffic data
+In order to identify trends in traffic flows and correlations between traffic and air quality data, traffic data were merged with pollutant data as part of the exploratory data analysis. Traffic data were only linked to air quality stations of the category "traffic". For each station, data from nearby traffic sensors were taken into account.
 
-In order to identify correlations between traffic and air quality data, these data were merged as part of the exploratory data analysis. To ensure an appropriate relationship between the number of vehicles and the pollutants emitted, the number of cars was added to the doubled number of actual trucks. O~3~ was not included in this case as its evolution is not directly related to road traffic and the amount of data for this pollutant is very limited. The following figure shows the average development of the pollutants PM~2.5~, PM~10~ and NO~2~ as well as the number of vehicles over the course of a day at air quality monitoring stations of the category "traffic". In particular, there is a similarity between the evolution of NO~2~ and the number of vehicles. For PM~2.5~ and PM~10~ there are no clear similarities. Only on weekdays does it appear that there is a morning peak, as with the number of vehicles. It is also noticeable that the highest points of the measured pollutant concentrations are reached only 1-2 hours after the highest values of the traffic volume. The traffic volume values (number of vehicles at hour t of a day) are therefore adjusted to a moving average according the following formula.
-
-$$
-n_{t_{adj}} = \frac{(n_t + n_{t-1} + n_{t-2})}{3}
-$$
-
-```{r Combining air quality with traffic data}
-#| message: false
-#| warning: false
-#| echo: false
-
+```{r merge air quality and traffic data}
+#| include: false
 
 # Data frame containing all traffic detectors in direct proximity to respective air quality measurement stations
 traffic_detectors_near_air_stations <- tibble(
@@ -434,8 +630,7 @@ get_traffic_data_by_detectors <- function(detectors) {
     group_by(date) %>%
     summarise(q_pkw_mq_hr = sum(q_pkw_mq_hr),
               q_lkw_mq_hr = sum(q_lkw_mq_hr)) %>%
-    ungroup() %>%
-    mutate(q_kfz_adj = q_pkw_mq_hr + 2 * q_lkw_mq_hr)
+    ungroup()
 }
 
 # Data frame with added traffic data to pollutant and weather values
@@ -444,221 +639,155 @@ airweather_traffic_df <- airweather_by_used_stations %>%
   left_join(traffic_detectors_near_air_stations) %>%
   mutate(traffic = map(.x = detectors, .f = get_traffic_data_by_detectors),
          messwerte = map2(.x = messwerte, .y = traffic, left_join)) %>%
-  pull(messwerte) %>%
-  bind_rows()
+  select(-detectors, -traffic)
 
+airweather_by_used_stations <- airweather_by_used_stations %>%
+  filter(stationgroups != "traffic") %>%
+  bind_rows(airweather_traffic_df)
 
-# Visualization of average pollutant concentration and the amount of traffic at 
-# traffic stations over the course of a day
-airweather_traffic_df %>%
-  mutate(hour = hour(date),
-         day_type = ifelse(wday(date) %in% c(1,7), "Weekend", "Weekday")) %>%
-  select(-O3) %>%
-  gather(key= "pollutant", value = "concentration", 4:6) %>%
-  group_by(hour, pollutant, day_type) %>%
-  summarise(avg_concentration = mean(concentration, na.rm = T),
-            avg_vehicles = mean(q_kfz_adj, na.rm = T)) %>%
-  ggplot(aes(x = hour)) +
-  geom_line(aes(y = avg_concentration, colour = pollutant)) +
-  geom_line(aes(y = avg_vehicles/60, colour = "Traffic")) +
-  scale_y_continuous(name = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-                     sec.axis = sec_axis(trans=~.*60, name="Average amount of cars")
-                     ) +
-  facet_wrap(~day_type) +
-  theme_bw() +
-  scale_colour_brewer(palette = "Dark2") +
-  labs(x = "Hour of the day",
-       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-       title = "Average pollutant concentration and traffic over the course of a day",
-       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de, viz.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"),
-        legend.title = element_blank())
-  
-
-
-# Visualization of average pollutant concentration and the amount of adjusted traffic at 
-# traffic stations over the course of a day
-airweather_traffic_df %>%
-  mutate(hour = hour(date),
-         day_type = ifelse(wday(date) %in% c(1,7), "Weekend", "Weekday")
-         ,q_kfz_adj = (q_kfz_adj + lag(q_kfz_adj,2) + lag(q_kfz_adj,1))/3) %>%
-  select(-O3) %>%
-  gather(key= "pollutant", value = "concentration", 4:6) %>%
-  group_by(hour, pollutant, day_type) %>%
-  summarise(avg_concentration = mean(concentration, na.rm = T),
-            avg_vehicles = mean(q_kfz_adj, na.rm = T)) %>%
-  ggplot(aes(x = hour)) +
-  geom_line(aes(y = avg_concentration, colour = pollutant)) +
-  geom_line(aes(y = avg_vehicles/60, colour = "Traffic")) +
-  scale_y_continuous(name = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-                     sec.axis = sec_axis(trans=~.*60, name="Adj. average amount of cars")
-                     ) +
-  facet_wrap(~day_type) +
-  theme_bw() +
-  scale_colour_brewer(palette = "Dark2") +
-  labs(x = "Hour of the day",
-       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-       title = "Average pollutant concentration and traffic (adjusted) over the course of a day",
-       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de, viz.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"),
-        legend.title = element_blank())
+remove(airweather_traffic_df, traffic_detectors_near_air_stations,
+       get_traffic_data_by_detectors)
 
 ```
 
-### Observation of strong outliers and unusual patterns
+Looking at the hourly trends of the CAQI index, a diurnal pattern can be seen with lower values during the early morning time and higher values later during a day. A peak can be observed withing the late afternoon hours. The hourly traffic flow also shows a diurnal pattern with peaks in the morning and late afternoon, probably due to rush hour traffic. Looking at the monthly trends in the CAQI index, there is a seasonal pattern with higher values in the colder months of the year and lower values in the warmer months. This could be due to various factors such as changes in weather conditions and human activities. The traffic flow seems to be slightly higher in the summer than during wintertime. One can also observe a slight decrease in August, which might be caused by national summer holidays. When comparing weekdays with weekends, the CAQI index seems to be slightly lower on weekends (days 6 and 7) than on weekdays. As expected, the traffic flow rate is significantly lower during saturdays and sundays compared to other days of the week. The addressed trends suggest that traffic could be a contributing factor to air pollution levels as measured by the CAQI index, especially during weekday rush hours. However, the relationship is not straightforward and could be influenced by various other factors such as weather conditions and seasonal variations. Further analysis could look at the interaction effects between these variables.
 
-For a better understanding of the very high outliers, these have been examined individually. The highest values for different pollutants are shown in the following figures. Outliers were identified using the inter-quartile range (IQR). First, the first and third quantiles (Q1/Q3) are determined. From these the IQR can be calculated (IQR = Q3-Q1). The so-called "normal data range" is defined in our case with a lower limit of Q1-4\*IQR and an upper limit of Q3+4\*IQR. All data points that fall below or exceed these limits are marked with dots in the figures. Despite further investigation and attempts to explain high readings as being due to particularly unusual weather events or exceptionally high short-term traffic volumes, no precise reasons could be identified for these strong outliers. It can therefore be speculated that they are due to local factors not captured in our data, such as short-term construction work, fires, malfunctioning monitoring stations, or even deliberate falsification of readings by passers-by. Additionally, extremely high levels of PM~10~ and PM~2.5~ are measured every year on New Year's Eve. These nights recorded the highest PM~2.5~ readings listed in our data set. These are caused by the burning of fireworks in Berlin. It is noteworthy that due to the ban on the sale of pyrotechnics and the cancellation of public fireworks due to the corona pandemic on New Year's Eve 2020/21 and 2021/22, elevated levels have also been measured, but they are significantly lower than in previous years.
-
-```{r Observation of strong outliers and unsual patterns}
+```{r hourly/monthly/weekly trends in traffic flow and CAQI index}
 #| message: false
 #| warning: false
 #| echo: false
 
-
-# Function to tag detect an outlier
-detect_outlier <- function(x) {
-  Quantile1 <- quantile(x, probs=.25, na.rm = T)
-  Quantile3 <- quantile(x, probs=.75, na.rm = T)
-  
-  IQR = Quantile3-Quantile1
-  x > Quantile3 + (IQR*4) | x < Quantile1 - (IQR*4)
-}
-
-# Function to tag observations with outliers
-tag_outlier <- function(dataframe,columns) {
-  dataframe <- dataframe %>%
-    mutate(pm25_outlier = F,
-           pm10_outlier = F,
-           O3_outlier = F,
-           NO2_outlier = F,
-           .after = NO2)
-  for (col in columns) {
-    dataframe[[paste0(col,'_outlier')]][detect_outlier(dataframe[[col]]) == T] <- T
-  }
-  return(dataframe)
-}
-
-
-# Getting data around the time the maximum value for NO2 was recorded
-max_outliers_NO2 <- airweather_by_used_stations %>%
-  mutate(messwerte = map(.x = messwerte, .f = tag_outlier,c("O3", "pm25", "pm10", "NO2"))) %>%
+# Get all observations with traffic data
+traffic_stations_df <- airweather_by_used_stations %>%
+  filter(stationgroups == "traffic") %>%
   pull(messwerte) %>%
-  bind_rows() %>%
-  filter(Station == "042 Neukölln") %>%
-  filter(date %within% interval(ymd("2017-02-10"),ymd("2017-02-20"))) %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
-  gather(key = "outlier_type", value = "outlier_val", 4:7) %>%
-  filter((pollutant == "pm25" & outlier_type == "pm25_outlier") | 
-           (pollutant == "pm10" & outlier_type == "pm10_outlier") | 
-           (pollutant == "O3" & outlier_type == "O3_outlier") | 
-           (pollutant == "NO2" & outlier_type == "NO2_outlier"))
+  bind_rows()
 
-# Getting data around the nearly highest value for pm25 was recorded
-max_outliers_pm25 <- airweather_by_used_stations %>%
-  mutate(messwerte = map(.x = messwerte, .f = tag_outlier,c("O3", "pm25", "pm10", "NO2"))) %>%
-  pull(messwerte) %>%
-  bind_rows() %>%
-  filter(Station == "171 Mitte") %>%
-  filter(date %within% interval(ymd("2022-11-03"),ymd("2022-11-12"))) %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
-  gather(key = "outlier_type", value = "outlier_val", 4:7) %>%
-  filter((pollutant == "pm25" & outlier_type == "pm25_outlier") | 
-           (pollutant == "pm10" & outlier_type == "pm10_outlier") | 
-           (pollutant == "O3" & outlier_type == "O3_outlier") | 
-           (pollutant == "NO2" & outlier_type == "NO2_outlier")) %>%
-  filter(pollutant %in% c("pm25", "pm10", "NO2"))
-
-# Getting data around the time the maximum value for pm10 was recorded
-max_outliers_pm10 <- airweather_traffic_df %>%
-  tag_outlier(c("O3", "pm25", "pm10", "NO2")) %>%
-  filter(Station == "143 Silbersteinstraße") %>%
-  filter(date %within% interval(ymd("2021-02-20"),ymd("2021-02-28"))) %>%
-  gather(key = "pollutant", value = "concentration", 4:7) %>%
-  gather(key = "outlier_type", value = "outlier_val", 4:7) %>%
-  filter((pollutant == "pm25" & outlier_type == "pm25_outlier") | 
-           (pollutant == "pm10" & outlier_type == "pm10_outlier") | 
-           (pollutant == "O3" & outlier_type == "O3_outlier") | 
-           (pollutant == "NO2" & outlier_type == "NO2_outlier")) %>%
-  filter(pollutant %in% c("pm25", "pm10", "NO2"))
-
-# Visualization of values for NO2
-ggplot() +
-  geom_line(aes(x = date, y = concentration, colour = pollutant), data = max_outliers_NO2) +
-  geom_point(aes(x = date, y = concentration, colour = pollutant),data = max_outliers_NO2 %>% filter(outlier_val == T)) +
+# Plot for hourly caqi trend
+caqi_hourly <- traffic_stations_df %>%
+  mutate(hour = hour(date)) %>%
+  select(hour, caqi_index) %>%
+  group_by(hour) %>%
+  summarise(avg_caqi_index = mean(caqi_index, na.rm = T)) %>%
+  ggplot(aes(x = hour, y = avg_caqi_index)) +
+  geom_line(color = "#48D737") +
+  labs(x = "Hour of the day", y = "Mean CAQI Index", title = "Hourly Trend in CAQI Index") +
   theme_bw() +
-  scale_colour_brewer(palette = "Dark2") +
-  labs(x = "Date",
-       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-       title = expression('Maximum concentration of ' ~ NO[2] ~ 'recorded in our data (2017-02-15 / Neukölln)'),
-       colour = "Pollutant",
-       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(size=7, face = "bold"),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7)) +
+  scale_x_continuous(breaks = seq(0, 23, 2))
 
-# Visualization of values for pm25
-ggplot() +
-  geom_line(aes(x = date, y = concentration, colour = pollutant), data = max_outliers_pm25) +
-  geom_point(aes(x = date, y = concentration, colour = pollutant),data = max_outliers_pm25 %>% filter(outlier_val == T)) +
+# Plot for hourly traffic flow trend
+q_kfz_hourly <- traffic_stations_df %>%
+  mutate(hour = hour(date)) %>%
+  mutate(q_kfz_mq_hr = q_lkw_mq_hr + q_pkw_mq_hr) %>%
+  select(hour, q_kfz_mq_hr) %>%
+  group_by(hour) %>%
+  summarise(avg_q_kfz_mq_hr = mean(q_kfz_mq_hr, na.rm = T)) %>%
+  ggplot(aes(x = hour, y = avg_q_kfz_mq_hr)) +
+  geom_line(color = "#566EF5") +
+  labs(x = "Hour of the Day", y = "Mean Traffic Flow Rate", title = "Hourly Trend in Traffic Flow Rate of Vehicles") +
   theme_bw() +
-  scale_colour_brewer(palette = "Dark2") +
-  labs(x = "Date",
-       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-       title = expression('Very high concentration of ' ~ PM[2.5] ~ 'recorded in our data (2022-11-04 / Mitte)'),
-       colour = "Pollutant",
-       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(size=7, face = "bold"),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7)) +
+  scale_x_continuous(breaks = seq(0, 23, 2))
 
-# Visualization of values for pm10
-ggplot() +
-  geom_line(aes(x = date, y = concentration, colour = pollutant), data = max_outliers_pm10) +
-  geom_point(aes(x = date, y = concentration, colour = pollutant),data = max_outliers_pm10 %>% filter(outlier_val == T)) +
+# Plot for monthly caqi trend
+caqi_monthly <- traffic_stations_df %>%
+  mutate(month = month(date)) %>%
+  select(month, caqi_index) %>%
+  group_by(month) %>%
+  summarise(avg_caqi_index = mean(caqi_index, na.rm = T)) %>%
+  ggplot(aes(x = month, y = avg_caqi_index)) +
+  geom_line(color = "#48D737") +
+  labs(x = "Month", y = "Mean CAQI Index", title = "Monthly Trend in CAQI Index") +
   theme_bw() +
-  scale_colour_brewer(palette = "Dark2") +
-  labs(x = "Date",
-       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-       title = expression('Maximum concentration of ' ~ PM[10] ~ 'recorded in our data (2017-02-24 / Silbersteinstraße)'),
-       colour = "Pollutant",
-       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(size=7, face = "bold"),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7)) +
+  scale_x_continuous(breaks = seq(0, 12, 1))
 
-# Remove not needed data
-remove(max_outliers_pm10,
-       max_outliers_pm25,
-       max_outliers_NO2)
-
-
-# Visualization of new year eve pollutant concentrations
-airweather_by_used_stations %>%
-  pull(messwerte) %>%
-  bind_rows() %>%
-  group_by(date) %>%
-  summarise(pm25 = mean(pm25, na.rm = T),
-            pm10 = mean(pm10, na.rm = T),
-            O3 = mean(O3, na.rm = T),
-            NO2 = mean(NO2, na.rm = T)) %>%
-   mutate(day = day(date),
-         month = month(date),
-         year = year(date),
-         hour = hour(date)) %>%
-  filter((day == 31 & month == 12 & hour > 15) | (day == 1 & month == 1 & hour < 12)) %>%
-  mutate(newyear = ifelse(month == 12, paste0(year,"/",year+1), paste0(year-1,"/",year))) %>%
-  gather(key = "pollutant", value = "concentration", 2:5) %>%
-  ggplot(aes(x = date, y = concentration, colour = pollutant)) +
-  geom_line() +
-  facet_wrap(vars(newyear), scales = "free_x")+
+# Plot for monthly traffic flow trend
+q_kfz_monthly <- traffic_stations_df %>%
+  mutate(month = month(date)) %>%
+  mutate(q_kfz_mq_hr = q_lkw_mq_hr + q_pkw_mq_hr) %>%
+  select(month, q_kfz_mq_hr) %>%
+  group_by(month) %>%
+  summarise(avg_q_kfz_mq_hr = mean(q_kfz_mq_hr, na.rm = T)) %>%
+  ggplot(aes(x = month, y = avg_q_kfz_mq_hr)) +
+  geom_line(color = "#566EF5") +
+  labs(x = "Month", y = "Mean Traffic Flow Rate", title = "Monthly Trend in Traffic Flow Rate of Vehicles") +
   theme_bw() +
-  scale_colour_brewer(palette = "Dark2") +
-  labs(x = "Date",
-       y = expression(Average~pollutant~concentration~(μg/m^{"3"})),
-       title = "Average pollutant concentration on new year eve",
-       colour = "Pollutant",
-       caption = "Source: Berlin Open Data - dl-de/by-2-0\nURI: luftdaten.berlin.de \nOwn representation") +
-  theme(plot.title = element_text(face = "bold"))
+  theme(plot.title = element_text(size=7, face = "bold"),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7)) +
+  scale_x_continuous(breaks = seq(0, 12, 1))
 
+# Plot for weekly caqi trend
+caqi_weekly <- traffic_stations_df %>%
+  mutate(weekday = wday(date,week_start = getOption("lubridate.week.start", 1))) %>%
+  select(weekday, caqi_index) %>%
+  group_by(weekday) %>%
+  summarise(avg_caqi_index = mean(caqi_index, na.rm = T)) %>%
+  ggplot(aes(x = weekday, y = avg_caqi_index)) +
+  geom_line(color = "#48D737") +
+  labs(x = "Day of the Week (1 = Monday, 7 = Sunday)", y = "Mean CAQI Index", title = "Weekday vs. Weekend Trend in CAQI Index") +
+  theme_bw() +
+  theme(plot.title = element_text(size=7, face = "bold"),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7)) +
+  scale_x_continuous(breaks = seq(1, 7, 1))
+
+# Plot for weekly traffic flow trend
+q_kfz_weekly <- traffic_stations_df %>%
+  mutate(weekday = wday(date,week_start = getOption("lubridate.week.start", 1))) %>%
+  mutate(q_kfz_mq_hr = q_lkw_mq_hr + q_pkw_mq_hr) %>%
+  select(weekday, q_kfz_mq_hr) %>%
+  group_by(weekday) %>%
+  summarise(avg_q_kfz_mq_hr = mean(q_kfz_mq_hr, na.rm = T)) %>%
+  ggplot(aes(x = weekday, y = avg_q_kfz_mq_hr)) +
+  geom_line(color = "#566EF5") +
+  labs(x = "Day of the Week (1 = Monday, 7 = Sunday)", y = "Mean Traffic Flow Rate", title = "Weekday vs. Weekend Trend in Traffic Flow Rate of Vehicles") +
+  theme_bw() +
+  theme(plot.title = element_text(size=7, face = "bold"),
+        axis.text = element_text(size = 6),
+        axis.title = element_text(size = 7))  +
+  scale_x_continuous(breaks = seq(1, 7, 1))
+
+
+# Plot aggregation
+gridExtra::grid.arrange(grobs = list(caqi_hourly, 
+                                     q_kfz_hourly,
+                                     caqi_monthly, 
+                                     q_kfz_monthly,
+                                     caqi_weekly, 
+                                     q_kfz_weekly),
+             nrow = 3,
+             bottom = grid::textGrob("Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, viz.berlin.de, open-meteo.com \nOwn representation",
+                           x = .02,
+                           y = 0.55,
+                           just = "left",
+                           gp = grid::gpar(fontsize = 7)))
+
+remove(caqi_hourly,
+       caqi_monthly,
+       caqi_weekly,
+       q_kfz_hourly,
+       q_kfz_monthly,
+       q_kfz_weekly)
 ```
 
-### Observation of linear relationships and correlations
+Correlation matrices make it easy to identify various linear relationships between different variables. By combining air quality measurements, weather data, and, in the case of "traffic" stations, traffic data, linear relationships can be observed. When having a closer look, however, it quickly becomes clear that there may be differences between groups of stations and stations themselves. One station may be in the shade and protected from sunlight. Another station may be well protected from the wind. Therefore, depending on the individual conditions, values may vary from station to station. However, these are aspects that cannot be explored in depth within the scope of this work. In the following, the correlation matrices for the respective station types are examined.
 
-A correlation matrix makes it easy to identify linear relationships between different variables. By combining air quality measurements, weather data, and, in the case of "traffic" stations, additional traffic data, general correlations can be seen. However, it quickly becomes clear that there may be differences between groups of stations and stations themselves. One station may be in the shade and protected from sunlight. Another station may be well protected from the wind. Therefore, depending on the individual conditions, the values may vary from station to station. However, these are aspects that cannot be explored in depth within the scope of this work. In the following, the correlation matrices for the respective station types are examined. As before, PM~10~, PM~2.5~ and NO~2~ are positively correlated. O~3~ is negatively correlated with all other pollutants. In the context of meteorological data, O~3~ is positively correlated with daily sunshine duration, temperature and dew point. O~3~ is negatively correlated with humidity. For all other pollutants, the same meteorological data show opposite linear correlations. Only wind speed is negatively correlated with all pollutants without exception. In addition, for the "traffic" stations, a positive linear correlation between NO~2~ and the number of vehicles recorded hourly at respective stations can be determined.
+By examining both suburban and background stations, we find that PM10, PM2.5 and NO2 exhibit strong positive correlations, while these pollutants are negatively correlated with O3. Wind speed, in particular, seems to play a significant role in affecting pollutant concentrations, as it appears to have negative correlations with all pollutants. This could suggest that higher wind speeds help disperse pollutants and enhance air quality.
+
+The CAQI index values have positively correlations with several variables including the duration of daily sunlight, the dewpoint, and the temperature, as well as negative correlations with the relative humidity at two meters. This could indicate that drier, warmer, and sunnier conditions may be associated with worse air quality. Intrestingly, all pollutants apart of O3 show inverse correlations with temperature, dewpoint, and daily sunlight, and a positive correlation with relative humidity.
+
+Moving to the traffic stations, the linear correlations between weather variables and pollutants are generally much weaker than at other station types. This observation could suggest that air quality at traffic stations may be influenced by several other factors not included in our data. However, wind speed still has a significant negative correlation with all pollutants as well as the CAQI index, reinforcing the idea that wind may help disperse pollutants.
+
+Traffic data, specifically the flow of cars and trucks, shows a positive correlation with NO2 and the CAQI index. This suggests that increased traffic might be associated with worse air quality. However, these relationships are not very strong.
 
 ```{r Obeservation of linear relationships and correlations}
 #| message: false
@@ -674,7 +803,7 @@ airweather_by_used_stations %>%
   select(-date, -Station, -stationgroups, -winddirection_100m) %>%
   correlate() %>%
   shave() %>%
-  rplot(shape = 15, colors = c("red", "green"), print_cor = T) +
+  rplot(shape = 15, colors = c("#F5182E", "#48D737"), print_cor = T) +
   theme(axis.text.x = element_text(angle = 70, vjust = .95, hjust=1)) +
   labs(title = "Correlation Matrix", subtitle = "Station type: Suburb",
        caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, viz.berlin.de, open-meteo.com \nOwn representation") +
@@ -689,7 +818,7 @@ airweather_by_used_stations %>%
   select(-date, -Station, -stationgroups, -winddirection_100m) %>%
   correlate() %>%
   shave() %>%
-  rplot(shape = 15, colors = c("red", "green"), print_cor = T) +
+  rplot(shape = 15, colors = c("#F5182E", "#48D737"), print_cor = T) +
   theme(axis.text.x = element_text(angle = 70, vjust = .95, hjust=1)) +
   labs(title = "Correlation Matrix", subtitle = "Station type: Background",
        caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, viz.berlin.de, open-meteo.com \nOwn representation") +
@@ -698,96 +827,69 @@ airweather_by_used_stations %>%
 
 # Correlation matrix showing linear relationships for weather and air quality
 # Station type: traffic
-airweather_traffic_df %>%
+airweather_by_used_stations %>%
   filter(stationgroups == "traffic") %>%
-  mutate(q_kfz_adj = (q_kfz_adj + lag(q_kfz_adj,2) + lag(q_kfz_adj,1))/3) %>%
-  select(-date, -Station, -O3, -stationgroups, -winddirection_100m, -q_pkw_mq_hr, -q_lkw_mq_hr) %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  select(-date, -Station, -O3, -stationgroups, -winddirection_100m) %>%
   correlate() %>%
   shave() %>%
-  rplot(shape = 15, colors = c("red", "green"), print_cor = T) +
+  rplot(shape = 15, colors = c("#F5182E", "#48D737"), print_cor = T) +
   theme(axis.text.x = element_text(angle = 70, vjust = .95, hjust=1)) +
   labs(title = "Correlation Matrix", subtitle = "Station type: Traffic",
        caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, viz.berlin.de, open-meteo.com \nOwn representation") +
   theme(plot.title = element_text(face = "bold"))
 
-
-
 ```
 
-## Pre-processing
+#### Creation of interaction features
 
-As part of the pre-processing, the data should be prepared in such a way that selected machine learning models achieve the best possible results.
+By creating interaction features, one can see whether a the effect of one variables on the outcome variable depends on the value of another variable. Thus, ab bit more complex relationship can be observed.\
+Interaction features between the variables of PM~2.5~, PM~10~, O~3~, NO~2~, windspeed, temperature and relative humidity were created to examine their relationship with the CAQI-Index. Those are created by multiplying the values of the interacting variables. Then, the correlation between the interaction features and the CAQI index can be computed. By looking at the following correlation values, it can be observed that the interaction between all pollutants (especially O~3~) and temperature have positive correlations with the CAQI index. All interactions between pollutants (excluding NO~2~) and relative humidity as well as windspeed also have positive correlations with the CAQI index. This suggests that wind speed, temperature and relative humidity may influence the effect of these pollutants on the CAQI index. These results suggest that the effect of pollutants on CAQI index are much likely to be influenced by weather variables. However, such relationships are complex and a full capturation of all factors explaining these effects could only be explained by more complex algorithms and most probably additional features not captured in our data.
 
-Next Steps:
+```{r creation of interaction features}
+#| echo: false
 
--   Transforming values for better relationships
-
-    -   Moving average amount of cars
-
-    -   Sum of precipitation for the last i.e. 10 hours
-
-    -   Changing wind direction in degrees to factor values giving i.e. 8 possible directions
-
--   Removing strong outliers
-
-etc...
-
-```{r}
-#| include: false
-
-
-detect_outlier <- function(x) {
-  Quantile1 <- quantile(x, probs=.25, na.rm = T)
-  Quantile3 <- quantile(x, probs=.75, na.rm = T)
+df <- airweather_by_used_stations %>%
+  pull(messwerte) %>%
+  bind_rows()
   
-  IQR = Quantile3-Quantile1
-  x > Quantile3 + (IQR*1.5) | x < Quantile1 - (IQR*1.5)
-}
-
-# create remove outlier function
-remove_outlier <- function(dataframe,columns) {
-  for (col in columns) {
-    dataframe[[col]][detect_outlier(dataframe[[col]]) == T] <- NA
-  }
-  return(dataframe)
-}
-
-
-
-rose_breaks <- c(0, 360/32, (1/32 + (1:15 / 16)) * 360, 360)
-
-rose_labs <- c(
-  "North", "North-Northeast", "Northeast", "East-Northeast",
-  "East", "East-Southeast", "Southeast", "South-Southeast",
-  "South", "South-Southwest", "Southwest", "West-Southwest",
-  "West", "West-Northwest", "Northwest", "North-Northwest",
-  "North"
-)
-
-calc_moving_precip <- function(precipitation, x) {
-  zoo_precipitation <- zoo(precipitation)
-  moving_sum <- rollsum(zoo_precipitation, x, align = "right", fill = NA)
-  moving_sum_vector <- as.vector(moving_sum)
-  return(moving_sum_vector)
-}
+interaction_features <- list(
+  "pm25_windspeed_100m" = df$pm25 * df$windspeed_100m,
+  "pm25_temperature_2m" = df$pm25 * df$temperature_2m,
+  "pm25_relativehumidity_2m" = df$pm25 * df$relativehumidity_2m,
+  "pm10_windspeed_100m" = df$pm10 * df$windspeed_100m,
+  "pm10_temperature_2m" = df$pm10 * df$temperature_2m,
+  "pm10_relativehumidity_2m" = df$pm10 * df$relativehumidity_2m,
+  "O3_windspeed_100m" = df$O3 * df$windspeed_100m,
+  "O3_temperature_2m" = df$O3 * df$temperature_2m,
+  "O3_relativehumidity_2m" = df$O3 * df$relativehumidity_2m,
+  "NO2_windspeed_100m" = df$NO2 * df$windspeed_100m,
+  "NO2_relativehumidity_2m" = df$NO2 * df$relativehumidity_2m,
+  "NO2_temperature_2m" = df$NO2 * df$temperature_2m
+) %>%
+  as_tibble()
 
 
-test2 <- airweather_traffic_df %>%
-  filter(Station == "174 Frankfurter Allee") %>%
-  mutate(q_kfz_adj = (q_kfz_adj + lag(q_kfz_adj,2) + lag(q_kfz_adj,1))/3) %>%
-  mutate(winddirection_100m = cut(
-      winddirection_100m,
-      breaks = rose_breaks,
-      labels = rose_labs,
-      right = FALSE,
-      include.lowest = TRUE)) %>%
-  mutate(precipitation_sum_60h = round(calc_moving_precip(precipitation, 60),4)) %>%
-  mutate(hour = as.factor(hour(date)),
-         weekday = as.factor(wday(date)),
-         month = as.factor(month(date)))
 
+map(.x = interaction_features, .f = correlate, df$caqi_index) %>%
+  bind_rows() %>%
+  mutate("Interaction Feature" = names(interaction_features), .after = term) %>%
+  select(-term) %>%
+  rename("Correlation with CAQI index" = x) %>%
+  kable(caption = "Source: Berlin Open Data - dl-de/by-2-0, Open-Meteo\nURI: luftdaten.berlin.de, open-meteo.com \nOwn representation")
 
+remove(df)
 ```
+
+To conclude, the deep dive into Berlin's air quality proved to be an analysis revealing patterns in pollution levels, weather and traffic data.
+Initial challenges around missing pollutant data were tackled by eliminating stations that were significantly deficient in their observations. Other missing values were filled through careful interpolation, keeping the data integrity intact.
+The established CAQI-Index methodology was utilized to combine different pollutant levels into one representative figure. By breaking down these index values into understandable categories, one could gain a relatable and comparative insight into air quality in the city of Berlin.
+The temporal analysis showed trends that varied based on station locations, weekdays, weekends, and seasons. Traffic-heavy areas recorded more pollutants, especially NO2, as compared to urban background and suburban stations. Regular workdays reported higher pollutant levels, with the exception of O3, which rose during the weekends. Seasonally, NO2 peaked during the chillier fall and winter, while O3 levels climbed during spring and summer. Similar patterns were mirrored in the CAQI index values, underlining the influence of individual pollutants on overall air quality.
+The exploratory data analysis also considered the interplay between pollutants, weather conditions and traffic patterns. Elements such as wind speed, temperature, and humidity showed significant correlation with pollution levels. Wind speed particularly stood out for its negative correlation, suggesting a role of diffusing pollutants and possibly enhancing air quality. Traffic was associated with higher NO2 and CAQI index levels, indicating a link between heavier traffic and declining air quality.
+Crucially, we found that the impact of pollutants on the CAQI index was moderated by weather variables. The interaction between pollutants and factors like temperature, humidity, and wind speed showed positive correlations with the CAQI index, suggesting the interplay of these elements in shaping air quality.
+In essence, this exploratory data analysis paves the way for creating more complex machine learning models, with the goal of predicing air quality in Berlin.
+
 
 ### Session info
 
