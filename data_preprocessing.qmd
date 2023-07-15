@@ -1,0 +1,287 @@
+---
+title: "Data Pre-Processing"
+format: html
+editor: visual
+---
+
+
+```{r}
+library(tidyverse)
+library(lubridate)
+library(furrr)
+library(zoo)
+```
+
+
+### Loading data sets from data collection
+
+```{r Loading data}
+#| message: false
+#| warning: false
+
+# Import of data sets which have been exported at the end of data collection
+air_weather_df <- read_csv2(file = "Daten/DataCollection/air_weather_df.csv") %>%
+  select(-...1)
+traffic_df <- read_csv2(file = "Daten/DataCollection/traffic_df.csv") %>%
+  select(-...1)
+traffic_detectors <- read_csv2(file = "Daten/DataCollection/traffic_detectors.csv") %>%
+  select(-...1)
+airquality_stations <- read_csv2(file = "Daten/DataCollection/airquality_stations.csv") %>%
+  select(-...1)
+
+# Extracting stations and groups from airquality_stations
+airquality_station_groups <- airquality_stations %>%
+  select(name, stationgroups) %>%
+  distinct()
+
+used_stations <- c("010 Wedding",
+                   "032 Grunewald",
+                   "042 Neukölln",
+                   "077 Buch",
+                   "085 Friedrichshagen",
+                   "117 Schildhornstraße",
+                   "124 Mariendorfer Damm",
+                   "143 Silbersteinstraße",
+                   "171 Mitte",
+                   "174 Frankfurter Allee",
+                   "027 Marienfelde",
+                   "145 Frohnau")
+
+# At a first sight, it appears that a lot of air quality monitoring data is 
+# missing before the beginning of 2017. It is therefore decided to exclude 
+# this data from the analysis
+air_weather_df <- air_weather_df %>%
+  filter(date >= as.Date("2017-01-01"))
+
+# Grouping air quality monitoring data by station
+airweather_by_station <- tibble(Station = airquality_station_groups %>% pull(name)) %>%
+  mutate(messwerte = map(Station, function(x) air_weather_df %>% filter(Station == x)))
+
+```
+
+### Adapt data types for improved use of the model
+
+
+```{r adapt data types and add features}
+
+air_weather_df <- air_weather_df %>%
+  mutate(Station = as.factor(Station),
+         stationgroups = as.factor(stationgroups)) %>%
+  mutate(hour = as.factor(hour(date)),
+         month = as.factor(month(date)),
+         weekday = as.factor(wday(date)),
+         .after = date) %>%
+  filter(Station %in% used_stations)
+
+glimpse(air_weather_df)
+```
+
+### Interpolate missing pollutant values
+
+```{r interpolate missing pollutant values}
+#| message: false
+#| warning: false
+
+
+airquality_data_by_station <- air_weather_df %>%
+  select(Station, stationgroups) %>%
+  distinct() %>%
+  mutate(messwerte = map(.x = Station,
+                         .f = function (x) air_weather_df %>% 
+                           filter(Station == x)))
+
+# Function to approximate values by interpolation for given columns in a dataframe 
+estimate_by_interpolation <- function(df, columns, maximum_gap) {
+  for (col in columns) {
+    # if a column has no values at all, do not interpolate
+    if ((sum(is.na(df[[col]]))/length(df[[col]])) == 1) { 
+      break
+    }
+    
+    na_start <- min(which(!is.na(df[[col]]))) # index of first non NA value
+    na_end <- max(which(!is.na(df[[col]]))) # index of last non NA value
+    
+    # approximate values between first and last NA value
+    df[[col]][na_start:na_end] <- na.approx(
+      df[[col]][na_start:na_end], maxgap = maximum_gap
+      )
+    
+  }
+  return(df)
+}
+
+
+
+# Replace missing values by Interpolation for all pollutants
+airquality_data_by_station <- airquality_data_by_station %>%
+  mutate(messwerte = map(.x = messwerte, estimate_by_interpolation, 
+                         c("pm25", "pm10", "O3", "NO2"), 
+                         4))
+```
+
+### Add CAQI index values as well as CAQI class labels
+
+```{r add CAQI-index and CAQI-type}
+# Compute the CAQI value for a single pollutant
+calculcate_single_aqi <- function(C, C_low, C_high, I_low, I_high) {
+  round(((I_high-I_low)/(C_high-C_low))*(C-C_low)+I_low,0)
+}
+
+# Compute the combined CAQI value
+compute_aqi <- function(NO2, PM10, O3, PM25) {
+  if (sum(c(NO2, PM10, O3, PM25) == -1)>2) {
+    return(NA)
+  }
+  
+  if(NO2 == -1) {
+    NO2 <- 0
+  }
+  if(PM10 == -1) {
+    PM10 <- 0
+  }
+  if(O3 == -1) {
+    O3 <- 0
+  }
+  if(PM25 == -1) {
+    PM25 <- 0
+  }
+  
+  NO2_index <- case_when(between(NO2, 0, 49) ~ calculcate_single_aqi(NO2, 0,49,0,24),
+                            between(NO2, 50, 99) ~ calculcate_single_aqi(NO2, 50,99,25,49),
+                            between(NO2, 100, 199) ~ calculcate_single_aqi(NO2, 100,199,50,74),
+                            between(NO2, 200, 400) ~ calculcate_single_aqi(NO2, 200,400,75,100),
+                            NO2 > 400 ~ 101)
+  PM10_index <- case_when(between(PM10, 0, 24) ~ calculcate_single_aqi(PM10, 0,24,0,24),
+                            between(PM10, 25, 49) ~ calculcate_single_aqi(PM10, 25,49,25,49),
+                            between(PM10, 50, 89) ~ calculcate_single_aqi(PM10, 50,89,50,74),
+                            between(PM10, 90, 180) ~ calculcate_single_aqi(PM10, 90,180,75,100),
+                            PM10 > 180 ~ 101)
+  O3_index <- case_when(between(O3, 0, 59) ~ calculcate_single_aqi(O3, 0,49,0,24),
+                            between(O3, 60, 119) ~ calculcate_single_aqi(O3, 50,99,25,49),
+                            between(O3, 120, 179) ~ calculcate_single_aqi(O3, 100,199,50,74),
+                            between(O3, 180, 240) ~ calculcate_single_aqi(O3, 200,399,75,100),
+                            O3 > 240 ~ 101)
+  PM25_index <- case_when(between(PM25, 0, 14) ~ calculcate_single_aqi(PM25, 0,49,0,24),
+                            between(PM25, 15, 29) ~ calculcate_single_aqi(PM25, 50,99,25,49),
+                            between(PM25, 30, 54) ~ calculcate_single_aqi(PM25, 100,199,50,74),
+                            between(PM25, 55, 110) ~ calculcate_single_aqi(PM25, 200,399,75,100),
+                            PM25 > 110 ~ 101)
+  return(max(c(NO2_index, PM10_index, O3_index, PM25_index)))
+}
+
+get_caqi_name <- function(caqi_index) {
+  case_when(caqi_index %in% c(0:24) ~ "very low",
+            caqi_index %in% c(25:49) ~ "low",
+            caqi_index %in% c(50:74) ~ "medium",
+            caqi_index %in% c(75:100) ~ "high",
+            caqi_index > 100 ~ "very high")
+}
+
+plan(multisession, workers = 4)
+air_weather_df <- airquality_data_by_station %>%
+  pull(messwerte) %>%
+  bind_rows() %>%
+  mutate(caqi_index = unlist(future_pmap(.l = list(if_else(is.na(NO2),-1,NO2), 
+                                                   if_else(is.na(pm10),-1,pm10), 
+                                                   if_else(is.na(O3),-1,O3), 
+                                                   if_else(is.na(pm25),-1,pm25)), 
+                                         compute_aqi)),
+         .after = NO2) %>%
+  mutate(caqi_type = as.factor(get_caqi_name(caqi_index)), .after = caqi_index)
+
+
+airquality_data_by_station <- air_weather_df %>%
+  select(Station, stationgroups) %>%
+  distinct() %>%
+  mutate(messwerte = map(.x = Station,
+                         .f = function (x) air_weather_df %>% 
+                           filter(Station == x)))
+
+
+remove(calculcate_single_aqi, 
+       compute_aqi,
+       get_caqi_name)
+```
+
+### Add traffic data to pollutant monitoring station data in traffic proximity
+
+```{r add traffic data}
+
+airquality_data_by_station_traffic <- airquality_data_by_station %>%
+  filter(stationgroups == "traffic")
+
+airquality_data_by_station_no_traffic <- airquality_data_by_station %>%
+  filter(stationgroups != "traffic")
+
+traffic_detectors_near_air_stations <- tibble(
+  Station = c("117 Schildhornstraße", "124 Mariendorfer Damm", "143 Silbersteinstraße", "174 Frankfurter Allee"),
+  detectors = list(c("TE386", "TE395"),c("TE014", "TE530", "TE531"),c("TE385", "TE384"),c("TE393", "TE394"))
+)
+
+get_traffic_data_by_detectors <- function(detectors) {
+  traffic_df %>%
+    filter(cs_shortname %in% detectors) %>%
+    estimate_by_interpolation(c("q_pkw_mq_hr", "q_lkw_mq_hr"), 4) %>%
+    group_by(date) %>%
+    summarise(q_pkw_mq_hr = sum(q_pkw_mq_hr),
+              q_lkw_mq_hr = sum(q_lkw_mq_hr)) %>%
+    ungroup()
+}
+
+# Data frame with added traffic data to pollutant and weather values
+airquality_data_by_station_traffic <- airquality_data_by_station_traffic %>%
+  left_join(traffic_detectors_near_air_stations) %>%
+  mutate(traffic = map(.x = detectors, .f = get_traffic_data_by_detectors),
+         messwerte = map2(.x = messwerte, .y = traffic, left_join)) %>%
+  select(-detectors,-traffic)
+
+airquality_data_by_station <- airquality_data_by_station_no_traffic %>%
+  bind_rows(airquality_data_by_station_traffic)
+
+remove(airquality_data_by_station_traffic,
+       airquality_data_by_station_no_traffic,
+       get_traffic_data_by_detectors)
+
+```
+
+
+### Additional Feature Engineering
+
+```{r add new features}
+
+calc_moving_precip <- function(precipitation, x) {
+  zoo_precipitation <- zoo(precipitation)
+  moving_sum <- rollsum(zoo_precipitation, x, align = "right", fill = NA)
+  moving_sum_vector <- as.vector(moving_sum)
+  return(moving_sum_vector)
+}
+
+
+wind_dir_breaks <- c(0, 360/32, (1/32 + (1:15 / 16)) * 360, 360)
+
+wind_labs <- c(
+  "N", "NNE", "NE", "ENE",
+  "E", "ESE", "SE", "SSE",
+  "S", "SSW", "SW", "WSW",
+  "W", "WNW", "NW", "NNW",
+  "N"
+)
+
+
+airquality_data_by_station <- airquality_data_by_station %>%
+  mutate(messwerte = map(.x = messwerte, .f = function(x) x %>%
+                           mutate(weekend = if_else(weekday %in% c(1,7), T, F),
+                                  precipitation_sum_30h = round(calc_moving_precip(precipitation, 30),4),
+                                  winddirections = cut(winddirection_100m,
+                                                           breaks = wind_dir_breaks,
+                                                           labels = wind_labs,
+                                                           right = FALSE,
+                                                           include.lowest = TRUE))))
+
+
+remove(calc_moving_precip,
+       wind_dir_breaks,
+       wind_labs)
+
+save(airquality_data_by_station, file = "airquality_data_by_station.RData")
+```
