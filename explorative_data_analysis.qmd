@@ -29,8 +29,6 @@ library(furrr)
 library(ggmap)
 ```
 
-## Explorative data analysis
-
 Exploratory data analysis involves examining the data sets imported as part of the data collection process. The first step is to understand the datasets and their variables, gain basic insights, and perform tasks such as computing CAQI-Index values. Another step is to investigate missing observations and how to deal with them. Finally, the actual analysis begins with examining distributions by calculating summary statistics and creating visualizations. Temporal trends and anomalies as well as outliers can be identified. Correlations, especially linear relationships between pollutant concentrations and weather or traffic data, are then examined.
 
 ### Loading data sets from data collection
