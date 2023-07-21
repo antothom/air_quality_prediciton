@@ -1,11 +1,26 @@
 ---
-title: "Data Pre-Processing"
-format: html
-editor: visual
+title: "Data Pre-processing"
+execute:
+  message: false
+  warning: false
+author: "Antoine Thomas"
+date: 2023-08-03
+format:
+  html: 
+    embed-resources: true
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
+editor: source
+theme:
+  light: flatly
+  dark: darkly
 ---
 
 
 ```{r}
+#| include: false
 library(tidyverse)
 library(lubridate)
 library(furrr)
@@ -14,6 +29,8 @@ library(zoo)
 
 
 ### Loading data sets from data collection
+
+First, the loading of the data that was previously collected has to be done. It involves reading CSV files containing the air quality, weather, and traffic data and creating data frames from them. Additionally, a specific range of data is selected based on a specific timestamp (data after the year 2017). Then the data is grouped by the air quality station.
 
 ```{r Loading data}
 #| message: false
@@ -61,9 +78,10 @@ airweather_by_station <- tibble(Station = airquality_station_groups %>% pull(nam
 
 ### Adapt data types for improved use of the model
 
+Next, data types must be adapted in the data frames to make them more suitable for training machine learning models. The station and station group variables are converted into factor data types, and additional time-related features such as the hour, month, and weekday are extracted from the date. The section ends with a glimpse of the modified air_weather_df data frame, providing a snapshot of the structure of the data.
 
 ```{r adapt data types and add features}
-
+# Adapt data types
 air_weather_df <- air_weather_df %>%
   mutate(Station = as.factor(Station),
          stationgroups = as.factor(stationgroups)) %>%
@@ -73,16 +91,19 @@ air_weather_df <- air_weather_df %>%
          .after = date) %>%
   filter(Station %in% used_stations)
 
+
 glimpse(air_weather_df)
 ```
 
 ### Interpolate missing pollutant values
 
+Here, the missing pollutant data is handled by applying an interpolation method. For each pollutant, this method estimates the missing values based on the values that are available before and after the missing value. This is done by creating a function (estimate_by_interpolation) that applies a linear approximation to the gaps in the data (max gap of 4), and this function is then applied to the dataset to fill the gaps.
+
 ```{r interpolate missing pollutant values}
 #| message: false
 #| warning: false
 
-
+# Get observations for respective air quality stations
 airquality_data_by_station <- air_weather_df %>%
   select(Station, stationgroups) %>%
   distinct() %>%
@@ -120,6 +141,8 @@ airquality_data_by_station <- airquality_data_by_station %>%
 ```
 
 ### Add CAQI index values as well as CAQI class labels
+
+This section involves adding Common Air Quality Index (CAQI) index values and class labels to the dataset. The CAQI is a standard that allows for the comparison of air quality across different stations and even cities. The process involves defining functions that calculate the CAQI values based on pollutant concentrations and a function that assigns class labels based on the calculated CAQI value. The functions are then applied to the dataset to add the CAQI index and type.
 
 ```{r add CAQI-index and CAQI-type}
 # Compute the CAQI value for a single pollutant
@@ -169,6 +192,7 @@ compute_aqi <- function(NO2, PM10, O3, PM25) {
   return(max(c(NO2_index, PM10_index, O3_index, PM25_index)))
 }
 
+# Function computing the qualitative name for respective caqi index values
 get_caqi_name <- function(caqi_index) {
   case_when(caqi_index %in% c(0:24) ~ "very low",
             caqi_index %in% c(25:49) ~ "low",
@@ -177,6 +201,7 @@ get_caqi_name <- function(caqi_index) {
             caqi_index > 100 ~ "very high")
 }
 
+# Compute caqi index values
 plan(multisession, workers = 4)
 air_weather_df <- airquality_data_by_station %>%
   pull(messwerte) %>%
@@ -189,7 +214,7 @@ air_weather_df <- airquality_data_by_station %>%
          .after = NO2) %>%
   mutate(caqi_type = as.factor(get_caqi_name(caqi_index)), .after = caqi_index)
 
-
+# Get observations for respective air quality stations
 airquality_data_by_station <- air_weather_df %>%
   select(Station, stationgroups) %>%
   distinct() %>%
@@ -197,13 +222,15 @@ airquality_data_by_station <- air_weather_df %>%
                          .f = function (x) air_weather_df %>% 
                            filter(Station == x)))
 
-
+# Remove not needed functions and variables
 remove(calculcate_single_aqi, 
        compute_aqi,
        get_caqi_name)
 ```
 
 ### Add traffic data to pollutant monitoring station data in traffic proximity
+
+Next, the focus is on incorporating traffic data into the air quality data, specifically for stations in close proximity to traffic. The traffic data, like the number of cars and trucks per hour, is added to the air quality monitoring data for the traffic-related stations. The data is grouped by the date and the total number of cars and trucks per hour is calculated. This enriched dataset is then combined with the rest of the air quality data.
 
 ```{r add traffic data}
 
@@ -218,6 +245,7 @@ traffic_detectors_near_air_stations <- tibble(
   detectors = list(c("TE386", "TE395"),c("TE014", "TE530", "TE531"),c("TE385", "TE384"),c("TE393", "TE394"))
 )
 
+# Function to get traffic data for a given traffic detector
 get_traffic_data_by_detectors <- function(detectors) {
   traffic_df %>%
     filter(cs_shortname %in% detectors) %>%
@@ -235,9 +263,11 @@ airquality_data_by_station_traffic <- airquality_data_by_station_traffic %>%
          messwerte = map2(.x = messwerte, .y = traffic, left_join)) %>%
   select(-detectors,-traffic)
 
+# Binding all Stations including traffic and non-traffic stations together
 airquality_data_by_station <- airquality_data_by_station_no_traffic %>%
   bind_rows(airquality_data_by_station_traffic)
 
+# Remove not needed functions and variables
 remove(airquality_data_by_station_traffic,
        airquality_data_by_station_no_traffic,
        get_traffic_data_by_detectors)
@@ -247,8 +277,12 @@ remove(airquality_data_by_station_traffic,
 
 ### Additional Feature Engineering
 
+Finally, additional features are created to further enrich the data for the machine learning models. A function to calculate the moving sum of precipitation over a 30-hour period is created and applied. Also, the wind direction is categorized into 16 cardinal directions (N, NNE, NE, etc.). 
+The data is then saved for future use in machine learning models.
+
 ```{r add new features}
 
+# Function to calulate the moving sum of precipitation over a given period of hours
 calc_moving_precip <- function(precipitation, x) {
   zoo_precipitation <- zoo(precipitation)
   moving_sum <- rollsum(zoo_precipitation, x, align = "right", fill = NA)
@@ -257,8 +291,11 @@ calc_moving_precip <- function(precipitation, x) {
 }
 
 
+# Cardinal wind direction breaks
 wind_dir_breaks <- c(0, 360/32, (1/32 + (1:15 / 16)) * 360, 360)
 
+
+# Cardinal wind directions
 wind_labs <- c(
   "N", "NNE", "NE", "ENE",
   "E", "ESE", "SE", "SSE",
@@ -267,7 +304,7 @@ wind_labs <- c(
   "N"
 )
 
-
+# Computation of additional features
 airquality_data_by_station <- airquality_data_by_station %>%
   mutate(messwerte = map(.x = messwerte, .f = function(x) x %>%
                            mutate(weekend = if_else(weekday %in% c(1,7), T, F),
@@ -279,9 +316,22 @@ airquality_data_by_station <- airquality_data_by_station %>%
                                                            include.lowest = TRUE))))
 
 
+
+
+
+# Remove not needed functions and variables
 remove(calc_moving_precip,
        wind_dir_breaks,
        wind_labs)
 
+# Saving pre-processed data frame
 save(airquality_data_by_station, file = "airquality_data_by_station.RData")
 ```
+
+### Session Info
+
+```{r session info}
+#| echo: false
+sessionInfo()
+```
+
