@@ -1,12 +1,27 @@
 ---
 title: "Multiple Linear Regression Model Implementation"
+execute:
+  message: false
+  warning: false
 author: "Antoine Thomas"
-format: html
-editor: visual
+date: 2023-08-03
+format:
+  html: 
+    embed-resources: true
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
+editor: source
+theme:
+  light: flatly
+  dark: darkly
 ---
 
 ```{r}
+#| include: false
 library(tidyverse)
+library(gt)
 ```
 
 ```{r}
@@ -26,35 +41,39 @@ The `create_resp_plot` function is intended to create a response plot based on a
 # Function creating response plot based on predicted and actual Y values
 create_resp_plot <- function(df) {
   station_name <- df$Station[[1]]
-  
+
   df %>%
     ggplot(aes(x = aqi_index_pred, y = O3)) +
     geom_point(alpha = .1) +
     geom_smooth(method = "lm") +
     theme_bw() +
-    xlim(c(0,105)) +
-    ylim(c(0,105)) +
-    labs(title = "Response Plot", 
-         subtitle = paste0("Station: ", station_name),
-         x = "FIT",
-         y = "Y") +
+    xlim(c(0, 105)) +
+    ylim(c(0, 105)) +
+    labs(
+      title = "Response Plot",
+      subtitle = paste0("Station: ", station_name),
+      x = "FIT",
+      y = "Y"
+    ) +
     theme(plot.title = element_text(face = "bold"))
 }
 
 # Function creating residual plot based on predicted and actual Y values
 create_residual_plot <- function(df) {
   station_name <- df$Station[[1]]
-  
+
   df %>%
-    ggplot(aes(x = aqi_index_pred, y = aqi_index_pred-caqi_index)) +
+    ggplot(aes(x = aqi_index_pred, y = aqi_index_pred - caqi_index)) +
     geom_point(alpha = .1) +
     theme_bw() +
-    labs(title = "Residual Plot", 
-         subtitle = paste0("Station: ", station_name),
-         x = "FIT",
-         y = "RES") +
-    xlim(c(0,105)) +
-    ylim(c(-50,50)) +
+    labs(
+      title = "Residual Plot",
+      subtitle = paste0("Station: ", station_name),
+      x = "FIT",
+      y = "RES"
+    ) +
+    xlim(c(0, 105)) +
+    ylim(c(-50, 50)) +
     theme(plot.title = element_text(face = "bold"))
 }
 ```
@@ -65,71 +84,127 @@ The `create_lm` function is used to create a linear model based on a training da
 
 In addition, a data frame called `data_prepared` is created, which contains already split data for training and testing.
 
+
+
 ```{r model creation function}
 
-
 # Function creating a linear regression model for a given dataframe and stationgroup
-create_lm <- function(df, dependent_var) {
-  
-  
-  dependent_vars <- c("pm25", "pm10", "NO2", "O3", "caqi_index")
-  
-  # Return NA if independent variable is not monitored at given Station
-  if (sum(is.na(df[[dependent_var]]))/nrow(df) >= 0.5) {
-    return(NA)
+create_lm <- function(df, dependent_var, forecast = F, return_model = F) {
+  # Create lagged variables in case forecase is true
+  if (forecast == T) {
+    lag_3_var_name <- paste0(dependent_var, "_lag_3")
+    lag_6_var_name <- paste0(dependent_var, "_lag_6")
+    df <- df %>%
+      mutate(
+        {{ lag_3_var_name }} := lag(!!sym(dependent_var), 3),
+        {{ lag_6_var_name }} := lag(!!sym(dependent_var), 6)
+      )
   }
-  
+
+
   # Get stationgroup
-  stationgroup <- as.character(df$stationgroups[[1]]) 
-  
+  station_group <- as.character(df$stationgroups[[1]])
+  # Get station name
+  station_name <- as.character(df$Station[[1]])
+  # Define possible dependent variables
+  dependent_vars <- c("pm25", "pm10", "NO2", "O3", "caqi_index")
   # Remove all pollutant and aqi variables except for the dependent variable
   vars_to_remove <- dependent_vars[-which(dependent_vars %in% c(dependent_var))]
 
-  # Remove independent variables which should not be considered in the model
-  df <- df %>% select(
-    -one_of(vars_to_remove),
-    -date,
-    -Station,
-    -stationgroups,
-    -caqi_type,
-    -weekend,
-    -precipitation,
-    -winddirection_100m
-  )
-  
-  # Create regression formula
-  lm_formula <- as.formula(paste0(dependent_var, " ~ ."))
-  
-  # Create model
-  model <- df %>%
-    na.omit() %>%
-    lm(formula = lm_formula, data = .)
-  
-  return(model)
-}
 
 
-create_lag_vars <- function(df, var) {
-  lag_3 <- paste0(var, "_lag_3")
-  lag_6 <- paste0(var, "_lag_6")
-  df <- df %>%
-    mutate(
-      {{ lag_3 }} := lag(!!sym(var), 3),
-      {{ lag_6 }} := lag(!!sym(var), 6)
+  # Return data frame full of NA if independent variable is not monitored at given Station
+  if (sum(is.na(df[[dependent_var]])) / nrow(df) >= 0.5) {
+    if (return_model == F) {
+      model <- NA
+    } else {
+      model <- list(NA)
+    }
+
+    result <- tibble(
+      Station = station_name,
+      stationgroups = station_group,
+      dependent_var = dependent_var,
+      model_lm = model,
+      rmse_train = NA,
+      mae_train = NA,
+      rmse_test = NA,
+      mae_test = NA
     )
-  return(df)
+    return(result)
+  }
+
+  # Remove independent variables which should not be considered in the model
+  lm_df <- df %>%
+    select(
+      -one_of(vars_to_remove),
+      -caqi_type,
+      -weekend,
+      -precipitation,
+      -winddirection_100m,
+    ) %>%
+    na.omit()
+
+  # removing all unwanted variables
+  lm_df_cl <- lm_df %>%
+    select(
+      -date,
+      -Station,
+      -stationgroups
+    )
+
+  # 80/20 training test split
+  numberOfTrainingSamples <- round(nrow(lm_df) * .8)
+
+  # training data
+  train_data <- lm_df_cl[1:numberOfTrainingSamples, ]
+  train_labels <- lm_df_cl[[dependent_var]][1:numberOfTrainingSamples]
+
+  # testing data
+  test_data <- lm_df_cl[-(1:numberOfTrainingSamples), ]
+  test_labels <- lm_df_cl[[dependent_var]][-(1:numberOfTrainingSamples)]
+
+  # Train model
+  model <- lm(as.formula(paste0(dependent_var, " ~  .")), data = lm_df_cl)
+
+  # generate predictions for our held-out testing and training data
+  pred_train <- predict(model, train_data)
+  pred_test <- predict(model, test_data)
+  pred_var_name <- paste0(dependent_var, "_pred")
+
+
+  # getting the initial data frame with test and train data
+  train_df <- lm_df[1:numberOfTrainingSamples, ]
+  test_df <- lm_df[-(1:numberOfTrainingSamples), ]
+
+  # get error values
+  rmse_train <- sqrt(mean((pred_train - train_labels)^2, na.rm = T))
+  mae_train <- mean(abs(pred_train - train_labels), na.rm = T)
+
+  rmse_test <- sqrt(mean((pred_test - test_labels)^2, na.rm = T))
+  mae_test <- mean(abs(pred_test - test_labels), na.rm = T)
+
+  if (return_model == F) {
+    model <- NA
+  } else {
+    model <- list(model)
+  }
+
+  # create a result data frame
+  result <- tibble(
+    Station = station_name,
+    stationgroups = station_group,
+    dependent_var = dependent_var,
+    model_lm = model,
+    rmse_train = rmse_train,
+    mae_train = mae_train,
+    rmse_test = rmse_test,
+    mae_test = mae_test
+  )
+  return(result)
 }
-
-# Preparation of train and test data for predictions
-data_prepared <- airquality_data_by_station %>%
-  # Selection of training data (80%)
-  mutate(train_df = map(messwerte, slice_head, prop=.8)) %>%
-  # Selection of test data (20%)
-  mutate(test_df = map2(.x = messwerte,.y = train_df, function(x,y) 
-    x[!(x$date %in% y$date),]))
-
-
 ```
+
 
 # Creation of Prediction Models
 
@@ -141,30 +216,8 @@ Prediction of CAQI index values based on weather and traffic data
 
 ```{r caqi_index_prediction}
 
-lm_caqi_index_pred <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "caqi_index")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(aqi_index_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$caqi_index - x$aqi_index_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$caqi_index - x$aqi_index_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-
-lm_caqi_index_pred %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_caqi_index_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "caqi_index", F) %>%
+  bind_rows()
 ```
 
 ### NO~2~ - Prediction
@@ -173,30 +226,8 @@ Prediction of NO~2~ values based on weather and traffic data
 
 ```{r NO2_prediction}
 
-lm_no2_pred <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "NO2")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(NO2_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$NO2 - x$NO2_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$NO2 - x$NO2_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-
-lm_no2_pred %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_no2_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "NO2", F) %>%
+  bind_rows()
 ```
 
 ### O~3~ - Prediction
@@ -205,31 +236,8 @@ Prediction of O~3~ values based on weather and traffic data
 
 ```{r O3_prediction}
 
-lm_o3_pred <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "O3")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(O3_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$O3 - x$O3_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$O3 - x$O3_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-
-  
-lm_o3_pred %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_o3_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "O3", F) %>%
+  bind_rows()
 ```
 
 
@@ -239,30 +247,8 @@ Prediction of PM~2.5~ values based on weather and traffic data
 
 ```{r pm25_prediction}
 
-lm_pm25_pred <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "pm25")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(pm25_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$pm25 - x$pm25_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$pm25 - x$pm25_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-  
-lm_pm25_pred %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_pm25_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "pm25", F) %>%
+  bind_rows()
 ```
 
 ### PM~10~ - Prediction
@@ -271,30 +257,8 @@ Prediction of PM~10~ values based on weather and traffic data
 
 ```{r pm10_prediction}
 
-lm_pm10_pred <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "pm10")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(pm10_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$pm10 - x$pm10_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$pm10 - x$pm10_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-  
-lm_pm10_pred %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_pm10_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "pm10", F) %>%
+  bind_rows()
 ```
 
 
@@ -308,40 +272,8 @@ Forecast of CAQI index values based on weather, traffic data and 3h/6h lagged CA
 
 ```{r caqi_index_forecast}
 
-# Preparation of train and test data for predictions
-data_prepared <- airquality_data_by_station %>%
-  # Adding lagged variables
-  mutate(messwerte = map(messwerte,create_lag_vars,"caqi_index")) %>%
-  # Selection of training data (80%)
-  mutate(train_df = map(messwerte, slice_head, prop=.8)) %>%
-  # Selection of test data (20%)
-  mutate(test_df = map2(.x = messwerte,.y = train_df, function(x,y) 
-    x[!(x$date %in% y$date),]))
-
-lm_caqi_index_forecast <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "caqi_index")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(aqi_index_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$caqi_index - x$aqi_index_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$caqi_index - x$aqi_index_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-
-lm_caqi_index_forecast %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_caqi_index_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "caqi_index", T) %>%
+  bind_rows()
 ```
 
 ### NO~2~ - Forecast
@@ -350,40 +282,8 @@ Forecast of NO~2~ values based on weather, traffic data and 3h/6h lagged NO2 val
 
 ```{r NO2_forecast}
 
-# Preparation of train and test data for predictions
-data_prepared <- airquality_data_by_station %>%
-  # Adding lagged variables
-  mutate(messwerte = map(messwerte,create_lag_vars,"NO2")) %>%
-  # Selection of training data (80%)
-  mutate(train_df = map(messwerte, slice_head, prop=.8)) %>%
-  # Selection of test data (20%)
-  mutate(test_df = map2(.x = messwerte,.y = train_df, function(x,y) 
-    x[!(x$date %in% y$date),]))
-
-lm_no2_forecast <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "NO2")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(NO2_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$NO2 - x$NO2_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$NO2 - x$NO2_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-
-lm_no2_forecast %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_no2_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "NO2", T) %>%
+  bind_rows()
 ```
 
 ### O~3~ - Forecast
@@ -392,41 +292,8 @@ Forecast of O~3~ values based on weather, traffic data and 3h/6h lagged O3 value
 
 ```{r O3_forecast}
 
-# Preparation of train and test data for predictions
-data_prepared <- airquality_data_by_station %>%
-  # Adding lagged variables
-  mutate(messwerte = map(messwerte,create_lag_vars,"O3")) %>%
-  # Selection of training data (80%)
-  mutate(train_df = map(messwerte, slice_head, prop=.8)) %>%
-  # Selection of test data (20%)
-  mutate(test_df = map2(.x = messwerte,.y = train_df, function(x,y) 
-    x[!(x$date %in% y$date),]))
-
-lm_o3_forecast <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "O3")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(O3_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$O3 - x$O3_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$O3 - x$O3_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-
-  
-lm_o3_forecast %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_o3_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "O3", T) %>%
+  bind_rows()
 ```
 
 
@@ -436,40 +303,8 @@ Forecast of PM~2.5~ values based on weather, traffic data and 3h/6h lagged PM2.5
 
 ```{r pm25_forecast}
 
-# Preparation of train and test data for predictions
-data_prepared <- airquality_data_by_station %>%
-  # Adding lagged variables
-  mutate(messwerte = map(messwerte,create_lag_vars,"pm25")) %>%
-  # Selection of training data (80%)
-  mutate(train_df = map(messwerte, slice_head, prop=.8)) %>%
-  # Selection of test data (20%)
-  mutate(test_df = map2(.x = messwerte,.y = train_df, function(x,y) 
-    x[!(x$date %in% y$date),]))
-
-lm_pm25_forecast <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "pm25")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(pm25_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$pm25 - x$pm25_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$pm25 - x$pm25_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-  
-lm_pm25_forecast %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_pm25_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "pm25", T) %>%
+  bind_rows()
 ```
 
 ### PM~10~ - Forecast
@@ -478,51 +313,326 @@ Forecast of PM~10~ values based on weather, traffic data and 3h/6h lagged PM10 v
 
 ```{r pm10_forecast}
 
-# Preparation of train and test data for predictions
-data_prepared <- airquality_data_by_station %>%
-  # Adding lagged variables
-  mutate(messwerte = map(messwerte,create_lag_vars,"pm10")) %>%
-  # Selection of training data (80%)
-  mutate(train_df = map(messwerte, slice_head, prop=.8)) %>%
-  # Selection of test data (20%)
-  mutate(test_df = map2(.x = messwerte,.y = train_df, function(x,y) 
-    x[!(x$date %in% y$date),]))
-
-lm_pm10_forecast <- data_prepared %>%
-  # Creation of lm model for each station
-  mutate(model_lm = map(.x = messwerte, .f = create_lm, "pm10")) %>%
-  # Checking if the create_lm return is a list
-  mutate(model_output = unlist(map(.x = model_lm, .f = typeof))) %>%
-  filter(model_output == "list") %>%
-  select(-model_output) %>%
-  # Predicting dependent variable for test data
-  mutate(test_pred = map2(.x = model_lm, .y = test_df, .f = function(x, y) {
-    y %>% mutate(pm10_pred = predict(x, newdata = .))
-  })) %>%
-  # Computing RMSE for each model
-  mutate(rmse = unlist(map(.x = test_pred, .f = function(x) {
-    sqrt(mean((x$pm10 - x$pm10_pred)^2, na.rm = T))
-  }))) %>%
-  # Computing MAE for each model
-  mutate(mae = unlist(map(.x = test_pred, .f = function(x) {
-    mean(abs(x$pm10 - x$pm10_pred), na.rm = T)
-  }))) %>%
-  # Extracting R^2 Values
-  mutate(r2 = unlist(map(model_lm, function(x) summary(x)[["r.squared"]])))
-  
-
-lm_pm10_forecast %>%
-  select(Station, stationgroups, rmse, mae,r2)
+lm_pm10_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "pm10", T) %>%
+  bind_rows()
 ```
 
 
-```{r}
-test <- lm_no2_pred %>%
-  pull(model_lm) %>%
-  .[[1]]
+### Results - Model Performance Evaluation
 
-test[["terms"]][[2]]
-test[["terms"]][[3]]
+For both pure prediction and forecast models, performance is measured using RMSE and MAE values applied to training and test data.
+
+```{r Result Tables}
+#| echo: false
+
+# Final Model Performance Indicators (Prediction - Test Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_train,
+    -mae_train
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  )
+
+
+
+# Final Model Performance Indicators (Forecast - Test Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_train,
+    -mae_train
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  )
+
+
+# Final Model Performance Indicators (Prediction - Training Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_test,
+    -mae_test
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  )
+
+# Final Model Performance Indicators (Forecast - Training Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_test,
+    -mae_test
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  )
 ```
-
-
