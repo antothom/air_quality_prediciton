@@ -1,0 +1,1086 @@
+---
+title: "Model Evaluation - Performance Metrics"
+execute:
+  message: false
+  warning: false
+author: "Antoine Thomas"
+date: 2023-08-03
+format:
+  html: 
+    embed-resources: true
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
+editor: source
+theme:
+  light: flatly
+  dark: darkly
+---
+
+```{r}
+#| include: false
+
+library(gt)
+library(tidyverse)
+```
+
+## Model Evaluation
+
+### Multiple Linear Regression
+
+For both pure prediction and forecast models, performance is measured using RMSE and MAE values applied to training and test data.
+
+```{r mlr evaluation}
+#| echo: false
+
+# Load results of mlr models 
+load("mlr_model_results.RData")
+
+
+# Final Model Performance Indicators (Prediction - Test Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_train,
+    -mae_train,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+
+# Final Model Performance Indicators (Forecast - Test Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_train,
+    -mae_train,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+# Final Model Performance Indicators (Prediction - Training Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_test,
+    -mae_test,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+# Final Model Performance Indicators (Forecast - Training Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_lm,
+    -rmse_test,
+    -mae_test,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Multiple Linear Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+# Remove results of mlr models 
+remove(list = grep("pred|forecast", names(.GlobalEnv), value = TRUE))
+
+```
+
+### Random Forest Regression
+
+```{r rf evaluation}
+#| echo: false
+
+# Load results of rf models 
+load("rf_model_results.RData")
+
+# Final Model Performance Indicators (Prediction - Test Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_rf,
+    -rmse_train,
+    -mae_train,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Random Forest Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+# Final Model Performance Indicators (Forecast - Test Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_rf,
+    -rmse_train,
+    -mae_train,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Random Forest Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+# Final Model Performance Indicators (Prediction - Training Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_rf,
+    -rmse_test,
+    -mae_test,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Random Forest Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+# Final Model Performance Indicators (Forecast - Training Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_rf,
+    -rmse_test,
+    -mae_test,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Random Forest Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+# Remove results of rf models 
+remove(list = grep("pred|forecast", names(.GlobalEnv), value = TRUE))
+
+```
+
+### XGBoost Regression
+
+```{r xgb evaluation}
+#| echo: false
+
+
+# Load results of rf models 
+load("xgb_model_results.RData")
+
+# Final Model Performance Indicators (Prediction - Test Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_xgb,
+    -rmse_train,
+    -mae_train,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**eXtreme Gradient Boosted Trees Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+# Final Model Performance Indicators (Forecast - Test Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_xgb,
+    -rmse_train,
+    -mae_train,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_test,
+    MAE = mae_test
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**eXtreme Gradient Boosted Trees Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Test)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+# Final Model Performance Indicators (Prediction - Training Data)
+grep("pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_xgb,
+    -rmse_test,
+    -mae_test,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**eXtreme Gradient Boosted Trees Regression Model (Prediction)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+# Final Model Performance Indicators (Forecast - Training Data)
+grep("forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.f = get) %>%
+  bind_rows() %>%
+  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
+  select(
+    -model_xgb,
+    -rmse_test,
+    -mae_test,
+    -train_data,
+    -test_data,
+    -var_relevance
+  ) %>%
+  rename(
+    RMSE = rmse_train,
+    MAE = mae_train
+  ) %>%
+  pivot_wider(
+    names_from = dependent_var,
+    values_from = c(RMSE, MAE),
+    names_glue = "{dependent_var}_{.value}"
+  ) %>%
+  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
+  relocate(
+    c(
+      caqi_index_RMSE, caqi_index_MAE,
+      pm25_RMSE, pm25_MAE,
+      pm10_RMSE, pm10_MAE,
+      O3_RMSE, O3_MAE,
+      NO2_RMSE, NO2_MAE
+    ),
+    .after = stationgroups
+  ) %>%
+  mutate(stationgroups = str_to_title(stationgroups)) %>%
+  gt(groupname_col = "stationgroups") %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(caqi_index_RMSE, caqi_index_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(pm25_RMSE, pm25_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(pm10_RMSE, pm10_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(O3_RMSE, O3_MAE)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(NO2_RMSE, NO2_MAE)
+  ) %>%
+  cols_label(
+    caqi_index_RMSE = "RMSE",
+    caqi_index_MAE = "MAE",
+    pm25_RMSE = "RMSE",
+    pm25_MAE = "MAE",
+    pm10_RMSE = "RMSE",
+    pm10_MAE = "MAE",
+    O3_RMSE = "RMSE",
+    O3_MAE = "MAE",
+    NO2_RMSE = "RMSE",
+    NO2_MAE = "MAE"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 2:last_col()
+  ) %>%
+  tab_header(
+    title = md("**eXtreme Gradient Boosted Trees Regression Model (3h Forecast)**"),
+    subtitle = "Performance based on RMSE and MAE (Train)"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+# Remove results of rf models 
+remove(list = grep("pred|forecast", names(.GlobalEnv), value = TRUE))
+
+```

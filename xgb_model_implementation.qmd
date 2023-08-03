@@ -1,7 +1,21 @@
 ---
-title: "XGBoost Model Implementation"
-format: html
+title: "XGBoost Regression Model Implementation"
+execute:
+  message: false
+  warning: false
+author: "Antoine Thomas"
+date: 2023-08-03
+format:
+  html: 
+    embed-resources: true
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
 editor: source
+theme:
+  light: flatly
+  dark: darkly
 ---
 
 ```{r}
@@ -10,6 +24,7 @@ library(caret)
 library(xgboost)
 library(lubridate)
 library(doParallel)
+library(furrr)
 ```
 
 ```{r}
@@ -76,17 +91,35 @@ The `create_xgb` function is used to create an XGBoost regression model based on
 
 ```{r}
 
-create_xgb <- function(df, dependent_var, forecast = F) {
+
+create_xgb <- function(df, dependent_var, forecast = F, return_model = F) {
+  
+  # Get stationgroup
+  station_group <- as.character(df$stationgroups[[1]])
+  # Get station name
+  station_name <- as.character(df$Station[[1]])
+  # Define possible dependent variables
+  dependent_vars <- c("pm25", "pm10", "NO2", "O3", "caqi_index")
+  
   # Return data frame full of NA if independent variable is not monitored at given Station
   if (sum(is.na(df[[dependent_var]])) / nrow(df) >= 0.5) {
+    if (return_model == F) {
+      model <- NA
+    } else {
+      model <- list(NA)
+    }
+    
     result <- tibble(
-      Station = NA,
-      stationgroups = NA,
-      train_matrix = list(NA),
-      model = list(NA),
-      test_df = list(NA),
-      rmse = NA,
-      mae = NA
+      Station = station_name,
+      stationgroups = station_group,
+      model_xgb = model,
+      rmse_train = NA,
+      mae_train = NA,
+      rmse_test = NA,
+      mae_test = NA,
+      train_data = list(NA),
+      test_data = list(NA),
+      var_relevance = list(NA)
     )
     return(result)
   }
@@ -102,17 +135,6 @@ create_xgb <- function(df, dependent_var, forecast = F) {
         {{ lag_6_var_name }} := lag(!!sym(dependent_var), 6)
       )
   }
-
-
-  # Get stationgroup
-  station_group <- as.character(df$stationgroups[[1]])
-  # Get station name
-  station_name <- as.character(df$Station[[1]])
-  # Define possible dependent variables
-  dependent_vars <- c("pm25", "pm10", "NO2", "O3", "caqi_index")
-
-
-
 
 
   # Remove all pollutant and aqi variables except for the dependent variable
@@ -150,7 +172,8 @@ create_xgb <- function(df, dependent_var, forecast = F) {
       -hour,
       -month,
       -weekday,
-      -one_of(dependent_var)
+      -one_of(dependent_var),
+      -winddirections
     )
 
   # binding dummy and numeric variables together
@@ -159,86 +182,113 @@ create_xgb <- function(df, dependent_var, forecast = F) {
   remove(hour, month, weekday, winddirections, dummy_var, xgb_df_cl) # remove not needed variables
 
   # 70/30 training test split
-  numberOfTrainingSamples <- round(length(xgbLabels) * .8)
+  set.seed(1234)
+  trainingSamples <- sort(sample(nrow(xgb_df), nrow(xgb_df) * .7))
 
   # training data
-  train_data <- xgb_df_matrix[1:numberOfTrainingSamples, ]
-  train_labels <- xgbLabels[1:numberOfTrainingSamples]
+  train_data <- xgb_df_matrix[trainingSamples, ]
+  train_labels <- xgbLabels[trainingSamples]
 
   # testing data
-  test_data <- xgb_df_matrix[-(1:numberOfTrainingSamples), ]
-  test_labels <- xgbLabels[-(1:numberOfTrainingSamples)]
+  test_data <- xgb_df_matrix[-trainingSamples, ]
+  test_labels <- xgbLabels[-trainingSamples]
 
-  # putting testing & training data into two seperates Dmatrixs objects
-  dtrain <- xgb.DMatrix(data = train_data)
-  dtest <- xgb.DMatrix(data = test_data)
+  # set.seed(1234)
+  # set.seed(1234)
+  # parts <- createFolds(train_labels, k = 10)
 
 
   # Specification of cross-validation method and number of folds
   xgb_trcontrol <- trainControl(
-    method = "cv",
-    number = 3,
-    repeats = 2,
-    allowParallel = TRUE,
-    verboseIter = TRUE,
-    returnData = FALSE
+    method = "none",
+    #number = 5,
+    # index = parts,
+    allowParallel = T,
+    verboseIter = F,
+    savePredictions = F,
+    seeds = set.seed(1234)
   )
+
 
   # Specification of the grid space to search for the best hyperparameters
   xgbGrid <- expand.grid(
-    nrounds = c(25, 30, 40),
-    max_depth = c(3, 4),
-    colsample_bytree = c(0.8, 1),
-    eta = c(0.3, 0.4),
-    gamma = c(2),
+    nrounds = c(5850),
+    max_depth = c(6),
+    colsample_bytree = c(0.8),
+    eta = c(0.012),
+    gamma = c(1),
     min_child_weight = c(1),
-    subsample = c(0.8, 1)
+    subsample = c(0.75)
   )
+
 
   # Prepare training with parallel computing
   cl <- makePSOCKcluster(5)
   registerDoParallel(cl)
 
   # Training of the XGBoost Model with previously defined hyperparameters
-  set.seed(1234)
   model <- train(
-    train_data, train_labels,
+    x = train_data,
+    y = train_labels,
     trControl = xgb_trcontrol,
     tuneGrid = xgbGrid,
     method = "xgbTree",
-    verbosity = 0
+    verbosity = 0,
+    metric = "RMSE"
   )
 
   stopCluster(cl)
 
+  
+  var_relevance <- xgb.importance(feature_names = colnames(xgb_df_matrix), model = model$finalModel) %>%
+    as_tibble()
+  
+  
   # generate predictions for our held-out testing data
-  pred <- predict(model, test_data)
+  pred_train <- predict(model, train_data)
+  pred_test <- predict(model, test_data)
   pred_var_name <- paste0(dependent_var, "_pred")
-  # getting the initial data frame with test and train data
-  train_df <- xgb_df[1:numberOfTrainingSamples, ]
-  test_df <- xgb_df[-(1:numberOfTrainingSamples), ] %>%
-    mutate({{ pred_var_name }} := pred, .after = one_of(dependent_var))
 
   # get error values
-  rmse <- sqrt(mean((pred - test_labels)^2))
-  mae <- mean(abs(pred - test_labels))
-
-
+  rmse_train <- sqrt(mean((pred_train - train_labels)^2))
+  mae_train <- mean(abs(pred_train - train_labels))
+  r2_train <- cor(train_labels,pred_train)^2
+  rmse_test <- sqrt(mean((pred_test - test_labels)^2))
+  mae_test <- mean(abs(pred_test - test_labels))
+  r2_test <- cor(test_labels,pred_test)^2
+  
+  
+  if (return_model == F) {
+    model <- NA
+  } else {
+    model <- list(model)
+  }
+  
+  train_data <- xgb_df[trainingSamples, ] %>%
+    select(date, one_of(dependent_var)) %>%
+    mutate(pred = pred_train)
+  
+  test_data <- xgb_df[-trainingSamples, ] %>%
+    select(date, one_of(dependent_var)) %>%
+    mutate(pred = pred_test)
+  
+  
   # create a result data frame
   result <- tibble(
     Station = station_name,
     stationgroups = station_group,
-    train_matrix = list(train_data),
-    model = list(model),
-    test_df = list(test_df),
-    rmse = rmse,
-    mae = mae
+    model_xgb = model,
+    rmse_train = rmse_train,
+    mae_train = mae_train,
+    rmse_test = rmse_test,
+    mae_test = mae_test,
+    train_data = list(train_data),
+    test_data = list(test_data),
+    var_relevance = list(var_relevance)
   )
   return(result)
 }
 
-
-create_xgb(airquality_data_by_station$messwerte[[7]], "caqi_index", F)
 
 ```
 
@@ -253,7 +303,8 @@ Prediction of CAQI index values based on weather and traffic data
 
 ```{r caqi_index_prediction}
 
-xgb_caqi_index_pred_2 <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "caqi_index", F) %>%
+plan(multisession, workers = 5)
+xgb_caqi_index_pred <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "caqi_index", F) %>%
   bind_rows()
 
 ```
@@ -264,9 +315,9 @@ Prediction of NO~2~ values based on weather and traffic data
 
 ```{r NO2_prediction}
 
-xgb_no2_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "NO2", F) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_no2_pred <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "NO2", F) %>%
+  bind_rows()
 
 ```
 
@@ -276,9 +327,9 @@ Prediction of O~3~ values based on weather and traffic data
 
 ```{r O3_prediction}
 
-xgb_o3_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "O3", F) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_o3_pred <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "O3", F) %>%
+  bind_rows()
 
 ```
 
@@ -289,9 +340,9 @@ Prediction of PM~2.5~ values based on weather and traffic data
 
 ```{r pm25_prediction}
 
-xgb_pm25_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm25", F) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_pm25_pred <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm25", F) %>%
+  bind_rows()
 
 ```
 
@@ -301,9 +352,9 @@ Prediction of PM~10~ values based on weather and traffic data
 
 ```{r pm10_prediction}
 
-xgb_pm10_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm10", F) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_pm10_pred <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm10", F) %>%
+  bind_rows()
 
 ```
 
@@ -318,9 +369,9 @@ Forecast of CAQI index values based on weather, traffic data and 3h/6h lagged CA
 
 ```{r caqi_index_forecast}
 
-xgb_caqi_index_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "caqi_index", T) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_caqi_index_forecast <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "caqi_index", T) %>%
+  bind_rows()
 
 ```
 
@@ -330,9 +381,9 @@ Forecast of NO~2~ values based on weather, traffic data and 3h/6h lagged NO2 val
 
 ```{r NO2_forecast}
 
-xgb_no2_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "NO2", T) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_no2_forecast <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "NO2", T) %>%
+  bind_rows()
 
 ```
 
@@ -342,9 +393,9 @@ Forecast of O~3~ values based on weather, traffic data and 3h/6h lagged O3 value
 
 ```{r O3_forecast}
 
-xgb_o3_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "O3", T) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_o3_forecast <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "O3", T) %>%
+  bind_rows()
 
 ```
 
@@ -355,9 +406,9 @@ Forecast of PM~2.5~ values based on weather, traffic data and 3h/6h lagged PM2.5
 
 ```{r pm25_forecast}
 
-xgb_pm25_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm25", T) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_pm25_forecast <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm25", T) %>%
+  bind_rows()
 
 ```
 
@@ -367,8 +418,45 @@ Forecast of PM~10~ values based on weather, traffic data and 3h/6h lagged PM10 v
 
 ```{r pm10_forecast}
 
-xgb_pm10_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm10", T) %>%
-  bind_rows() %>%
-  na.omit()
+plan(multisession, workers = 5)
+xgb_pm10_forecast <- future_map(.x = airquality_data_by_station$messwerte, .f = create_xgb, "pm10", T) %>%
+  bind_rows()
+
+
+xgb_pm10_forecast$var_relevance
+```
+
+
+### Saving Results
+
+Results of the prediction and forecast models are saved for subsequent performance evaluation.
+
+```{r}
+
+save(list = grep("pred|forecast", names(.GlobalEnv), value = TRUE), file = "xgb_model_results.RData")
+
+
+xgb_pm25_forecast <- xgb_pm25_pred %>%
+  rename(model_xgb = model_rf)
+
 
 ```
+
+
+
+
+### Model Performance Visualization
+
+```{r visual tuning variables}
+
+tuneplot <- function(x, probs = .90) {
+  ggplot(x) +
+    coord_cartesian(ylim = c(quantile(x$results$RMSE, probs = probs), min(x$results$RMSE))) +
+    theme_bw()
+}
+
+
+tuneplot(model)
+
+```
+

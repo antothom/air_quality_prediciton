@@ -88,6 +88,7 @@ In addition, a data frame called `data_prepared` is created, which contains alre
 
 ```{r model creation function}
 
+
 # Function creating a linear regression model for a given dataframe and stationgroup
 create_lm <- function(df, dependent_var, forecast = F, return_model = F) {
   # Create lagged variables in case forecase is true
@@ -100,8 +101,7 @@ create_lm <- function(df, dependent_var, forecast = F, return_model = F) {
         {{ lag_6_var_name }} := lag(!!sym(dependent_var), 6)
       )
   }
-
-
+  
   # Get stationgroup
   station_group <- as.character(df$stationgroups[[1]])
   # Get station name
@@ -129,7 +129,10 @@ create_lm <- function(df, dependent_var, forecast = F, return_model = F) {
       rmse_train = NA,
       mae_train = NA,
       rmse_test = NA,
-      mae_test = NA
+      mae_test = NA,
+      train_data = list(NA),
+      test_data = list(NA),
+      var_relevance = list(NA)
     )
     return(result)
   }
@@ -166,7 +169,7 @@ create_lm <- function(df, dependent_var, forecast = F, return_model = F) {
 
   # Train model
   model <- lm(as.formula(paste0(dependent_var, " ~  .")), data = lm_df_cl)
-
+  
   # generate predictions for our held-out testing and training data
   pred_train <- predict(model, train_data)
   pred_test <- predict(model, test_data)
@@ -189,7 +192,44 @@ create_lm <- function(df, dependent_var, forecast = F, return_model = F) {
   } else {
     model <- list(model)
   }
-
+  
+  
+  
+  rsq_diff <- tibble(added_var = character(),
+                     rsq = numeric())
+  
+  lm_df_cl_colnames <- names(lm_df_cl)[names(lm_df_cl) != dependent_var]
+  
+  # Loop to compute the most relevant variables for the model
+  for (x in 1:length(lm_df_cl_colnames)) {
+    # Get data with relevant columns for iteration x 
+    data_iter <- train_data[, append(lm_df_cl_colnames[1:x], dependent_var)]
+    # Get name of new variable in iteration x
+    new_var <- tail(append(lm_df_cl_colnames[1:x], dependent_var), 2)[1]
+    # Compute model with variables of iteration x
+    model_x <- lm(as.formula(paste0(dependent_var, " ~  .")), data = data_iter)
+    # Get R2 value of model in iteration x
+    rsq <- summary(model_x)$adj.r.squared
+    # Add new row to df
+    rsq_diff[nrow(rsq_diff) + 1,] <- list(new_var, rsq)
+  }
+  
+  # Compute differences of R2 between each iteration 
+  # Arranging df in order to get most relevant variables for the model
+  rsq_diff <- rsq_diff %>%
+    mutate(rsq_diff = rsq-base::ifelse((is.na(lag(rsq,1))), 0, lag(rsq,1)),
+           rsq_diff = ifelse(rsq_diff < 0, 0, rsq_diff)) %>%
+    arrange(-rsq_diff) %>%
+    select(-rsq)
+  
+  train_data <- lm_df[1:numberOfTrainingSamples, ] %>%
+    select(date, one_of(dependent_var)) %>%
+    mutate(pred = pred_train)
+  
+  test_data <- lm_df[-(1:numberOfTrainingSamples), ] %>%
+    select(date, one_of(dependent_var)) %>%
+    mutate(pred = pred_test)
+  
   # create a result data frame
   result <- tibble(
     Station = station_name,
@@ -199,10 +239,14 @@ create_lm <- function(df, dependent_var, forecast = F, return_model = F) {
     rmse_train = rmse_train,
     mae_train = mae_train,
     rmse_test = rmse_test,
-    mae_test = mae_test
+    mae_test = mae_test,
+    train_data = list(train_data),
+    test_data = list(test_data),
+    var_relevance = list(rsq_diff)
   )
   return(result)
 }
+
 ```
 
 
@@ -218,6 +262,7 @@ Prediction of CAQI index values based on weather and traffic data
 
 lm_caqi_index_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "caqi_index", F) %>%
   bind_rows()
+
 ```
 
 ### NO~2~ - Prediction
@@ -274,6 +319,8 @@ Forecast of CAQI index values based on weather, traffic data and 3h/6h lagged CA
 
 lm_caqi_index_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_lm, "caqi_index", T) %>%
   bind_rows()
+
+lm_caqi_index_forecast$var_relevance[[11]]
 ```
 
 ### NO~2~ - Forecast
@@ -318,321 +365,12 @@ lm_pm10_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_l
 ```
 
 
-### Results - Model Performance Evaluation
+### Saving Results
 
-For both pure prediction and forecast models, performance is measured using RMSE and MAE values applied to training and test data.
+Results of the prediction and forecast models are saved for subsequent performance evaluation.
 
-```{r Result Tables}
-#| echo: false
+```{r saving_results}
 
-# Final Model Performance Indicators (Prediction - Test Data)
-grep("pred", names(.GlobalEnv), value = TRUE) %>%
-  map(.f = get) %>%
-  bind_rows() %>%
-  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
-  select(
-    -model_lm,
-    -rmse_train,
-    -mae_train
-  ) %>%
-  rename(
-    RMSE = rmse_test,
-    MAE = mae_test
-  ) %>%
-  pivot_wider(
-    names_from = dependent_var,
-    values_from = c(RMSE, MAE),
-    names_glue = "{dependent_var}_{.value}"
-  ) %>%
-  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
-  relocate(
-    c(
-      caqi_index_RMSE, caqi_index_MAE,
-      pm25_RMSE, pm25_MAE,
-      pm10_RMSE, pm10_MAE,
-      O3_RMSE, O3_MAE,
-      NO2_RMSE, NO2_MAE
-    ),
-    .after = stationgroups
-  ) %>%
-  mutate(stationgroups = str_to_title(stationgroups)) %>%
-  gt(groupname_col = "stationgroups") %>%
-  tab_spanner(
-    label = md("**CAQI Index**"),
-    columns = c(caqi_index_RMSE, caqi_index_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM<sub>2.5</sub>**"),
-    columns = c(pm25_RMSE, pm25_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM~10~**"),
-    columns = c(pm10_RMSE, pm10_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**O~3~**"),
-    columns = c(O3_RMSE, O3_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**NO~2~**"),
-    columns = c(NO2_RMSE, NO2_MAE)
-  ) %>%
-  cols_label(
-    caqi_index_RMSE = "RMSE",
-    caqi_index_MAE = "MAE",
-    pm25_RMSE = "RMSE",
-    pm25_MAE = "MAE",
-    pm10_RMSE = "RMSE",
-    pm10_MAE = "MAE",
-    O3_RMSE = "RMSE",
-    O3_MAE = "MAE",
-    NO2_RMSE = "RMSE",
-    NO2_MAE = "MAE"
-  ) %>%
-  cols_align(
-    align = "center",
-    columns = 2:last_col()
-  ) %>%
-  tab_header(
-    title = md("**Multiple Linear Regression Model (Prediction)**"),
-    subtitle = "Performance based on RMSE and MAE (Test)"
-  ) %>%
-  fmt_number(decimals = 2) %>%
-  cols_width(
-    2:last_col() ~ px(60)
-  )
+save(list = grep("pred|forecast", names(.GlobalEnv), value = TRUE), file = "mlr_model_results.RData")
 
-
-
-# Final Model Performance Indicators (Forecast - Test Data)
-grep("forecast", names(.GlobalEnv), value = TRUE) %>%
-  map(.f = get) %>%
-  bind_rows() %>%
-  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
-  select(
-    -model_lm,
-    -rmse_train,
-    -mae_train
-  ) %>%
-  rename(
-    RMSE = rmse_test,
-    MAE = mae_test
-  ) %>%
-  pivot_wider(
-    names_from = dependent_var,
-    values_from = c(RMSE, MAE),
-    names_glue = "{dependent_var}_{.value}"
-  ) %>%
-  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
-  relocate(
-    c(
-      caqi_index_RMSE, caqi_index_MAE,
-      pm25_RMSE, pm25_MAE,
-      pm10_RMSE, pm10_MAE,
-      O3_RMSE, O3_MAE,
-      NO2_RMSE, NO2_MAE
-    ),
-    .after = stationgroups
-  ) %>%
-  mutate(stationgroups = str_to_title(stationgroups)) %>%
-  gt(groupname_col = "stationgroups") %>%
-  tab_spanner(
-    label = md("**CAQI Index**"),
-    columns = c(caqi_index_RMSE, caqi_index_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM<sub>2.5</sub>**"),
-    columns = c(pm25_RMSE, pm25_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM~10~**"),
-    columns = c(pm10_RMSE, pm10_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**O~3~**"),
-    columns = c(O3_RMSE, O3_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**NO~2~**"),
-    columns = c(NO2_RMSE, NO2_MAE)
-  ) %>%
-  cols_label(
-    caqi_index_RMSE = "RMSE",
-    caqi_index_MAE = "MAE",
-    pm25_RMSE = "RMSE",
-    pm25_MAE = "MAE",
-    pm10_RMSE = "RMSE",
-    pm10_MAE = "MAE",
-    O3_RMSE = "RMSE",
-    O3_MAE = "MAE",
-    NO2_RMSE = "RMSE",
-    NO2_MAE = "MAE"
-  ) %>%
-  cols_align(
-    align = "center",
-    columns = 2:last_col()
-  ) %>%
-  tab_header(
-    title = md("**Multiple Linear Regression Model (3h Forecast)**"),
-    subtitle = "Performance based on RMSE and MAE (Test)"
-  ) %>%
-  fmt_number(decimals = 2) %>%
-  cols_width(
-    2:last_col() ~ px(60)
-  )
-
-
-# Final Model Performance Indicators (Prediction - Training Data)
-grep("pred", names(.GlobalEnv), value = TRUE) %>%
-  map(.f = get) %>%
-  bind_rows() %>%
-  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
-  select(
-    -model_lm,
-    -rmse_test,
-    -mae_test
-  ) %>%
-  rename(
-    RMSE = rmse_train,
-    MAE = mae_train
-  ) %>%
-  pivot_wider(
-    names_from = dependent_var,
-    values_from = c(RMSE, MAE),
-    names_glue = "{dependent_var}_{.value}"
-  ) %>%
-  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
-  relocate(
-    c(
-      caqi_index_RMSE, caqi_index_MAE,
-      pm25_RMSE, pm25_MAE,
-      pm10_RMSE, pm10_MAE,
-      O3_RMSE, O3_MAE,
-      NO2_RMSE, NO2_MAE
-    ),
-    .after = stationgroups
-  ) %>%
-  mutate(stationgroups = str_to_title(stationgroups)) %>%
-  gt(groupname_col = "stationgroups") %>%
-  tab_spanner(
-    label = md("**CAQI Index**"),
-    columns = c(caqi_index_RMSE, caqi_index_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM<sub>2.5</sub>**"),
-    columns = c(pm25_RMSE, pm25_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM~10~**"),
-    columns = c(pm10_RMSE, pm10_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**O~3~**"),
-    columns = c(O3_RMSE, O3_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**NO~2~**"),
-    columns = c(NO2_RMSE, NO2_MAE)
-  ) %>%
-  cols_label(
-    caqi_index_RMSE = "RMSE",
-    caqi_index_MAE = "MAE",
-    pm25_RMSE = "RMSE",
-    pm25_MAE = "MAE",
-    pm10_RMSE = "RMSE",
-    pm10_MAE = "MAE",
-    O3_RMSE = "RMSE",
-    O3_MAE = "MAE",
-    NO2_RMSE = "RMSE",
-    NO2_MAE = "MAE"
-  ) %>%
-  cols_align(
-    align = "center",
-    columns = 2:last_col()
-  ) %>%
-  tab_header(
-    title = md("**Multiple Linear Regression Model (Prediction)**"),
-    subtitle = "Performance based on RMSE and MAE (Train)"
-  ) %>%
-  fmt_number(decimals = 2) %>%
-  cols_width(
-    2:last_col() ~ px(60)
-  )
-
-# Final Model Performance Indicators (Forecast - Training Data)
-grep("forecast", names(.GlobalEnv), value = TRUE) %>%
-  map(.f = get) %>%
-  bind_rows() %>%
-  mutate(Station = sub("^[0-9]* ", "", Station)) %>%
-  select(
-    -model_lm,
-    -rmse_test,
-    -mae_test
-  ) %>%
-  rename(
-    RMSE = rmse_train,
-    MAE = mae_train
-  ) %>%
-  pivot_wider(
-    names_from = dependent_var,
-    values_from = c(RMSE, MAE),
-    names_glue = "{dependent_var}_{.value}"
-  ) %>%
-  mutate_all(~ ifelse(. == "NA / NA", NA, .)) %>%
-  relocate(
-    c(
-      caqi_index_RMSE, caqi_index_MAE,
-      pm25_RMSE, pm25_MAE,
-      pm10_RMSE, pm10_MAE,
-      O3_RMSE, O3_MAE,
-      NO2_RMSE, NO2_MAE
-    ),
-    .after = stationgroups
-  ) %>%
-  mutate(stationgroups = str_to_title(stationgroups)) %>%
-  gt(groupname_col = "stationgroups") %>%
-  tab_spanner(
-    label = md("**CAQI Index**"),
-    columns = c(caqi_index_RMSE, caqi_index_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM<sub>2.5</sub>**"),
-    columns = c(pm25_RMSE, pm25_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**PM~10~**"),
-    columns = c(pm10_RMSE, pm10_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**O~3~**"),
-    columns = c(O3_RMSE, O3_MAE)
-  ) %>%
-  tab_spanner(
-    label = md("**NO~2~**"),
-    columns = c(NO2_RMSE, NO2_MAE)
-  ) %>%
-  cols_label(
-    caqi_index_RMSE = "RMSE",
-    caqi_index_MAE = "MAE",
-    pm25_RMSE = "RMSE",
-    pm25_MAE = "MAE",
-    pm10_RMSE = "RMSE",
-    pm10_MAE = "MAE",
-    O3_RMSE = "RMSE",
-    O3_MAE = "MAE",
-    NO2_RMSE = "RMSE",
-    NO2_MAE = "MAE"
-  ) %>%
-  cols_align(
-    align = "center",
-    columns = 2:last_col()
-  ) %>%
-  tab_header(
-    title = md("**Multiple Linear Regression Model (3h Forecast)**"),
-    subtitle = "Performance based on RMSE and MAE (Train)"
-  ) %>%
-  fmt_number(decimals = 2) %>%
-  cols_width(
-    2:last_col() ~ px(60)
-  )
 ```

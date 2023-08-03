@@ -1,7 +1,21 @@
 ---
-title: "Random Forest Model Implementation"
-format: html
+title: "Random Forest Regression Model Implementation"
+execute:
+  message: false
+  warning: false
+author: "Antoine Thomas"
+date: 2023-08-03
+format:
+  html: 
+    embed-resources: true
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
 editor: source
+theme:
+  light: flatly
+  dark: darkly
 ---
 
 ```{r}
@@ -9,6 +23,8 @@ library(tidyverse)
 library(caret)
 library(lubridate)
 library(doParallel)
+library(gt)
+library(randomForest)
 ```
 
 ```{r}
@@ -66,29 +82,16 @@ create_residual_plot <- function(df) {
 }
 ```
 
-### Functions for creating XGBoost models
+### Functions for creating Random Forest models
 
 The `create_rf` function is used to create a Random Forest regression model based on a training data set and two other parameters. These are `dependent_var`, which specifies the name of the dependent variable, and `forecast`, which specifies whether the regression model should create a 3 hour forecast model or a pure prediction model based on weather and traffic data.
 
 ```{r}
 
-create_rf <- function(df, dependent_var, forecast = F) {
-  
-  # Return data frame full of NA if independent variable is not monitored at given Station
-  if (sum(is.na(df[[dependent_var]])) / nrow(df) >= 0.5) {
-    result <- tibble(
-      Station = NA,
-      stationgroups = NA,
-      train_matrix = list(NA),
-      model = list(NA),
-      test_df = list(NA),
-      rmse = NA,
-      mae = NA
-    )
-    return(result)
-  }
+df <- airquality_data_by_station$messwerte[[10]]
+dependent_var <- "caqi_index"
 
-
+create_rf <- function(df, dependent_var, forecast = F, return_model = F) {
   # Create lagged variables in case forecase is true
   if (forecast == T) {
     lag_3_var_name <- paste0(dependent_var, "_lag_3")
@@ -110,6 +113,30 @@ create_rf <- function(df, dependent_var, forecast = F) {
   # Remove all pollutant and aqi variables except for the dependent variable
   vars_to_remove <- dependent_vars[-which(dependent_vars %in% c(dependent_var))]
 
+
+  # Return data frame full of NA if independent variable is not monitored at given Station
+  if (sum(is.na(df[[dependent_var]])) / nrow(df) >= 0.5) {
+    if (return_model == F) {
+      model <- NA
+    } else {
+      model <- list(NA)
+    }
+
+    result <- tibble(
+      Station = station_name,
+      stationgroups = station_group,
+      dependent_var = dependent_var,
+      model_rf = model,
+      rmse_train = NA,
+      mae_train = NA,
+      rmse_test = NA,
+      mae_test = NA,
+      train_data = list(NA),
+      test_data = list(NA),
+      var_relevance = list(NA)
+    )
+    return(result)
+  }
 
 
   # Remove independent variables which should not be considered in the model
@@ -161,9 +188,8 @@ create_rf <- function(df, dependent_var, forecast = F) {
 
   # Specification of the grid space to search for the best hyperparameters
   rfGrid <- expand.grid(
-    mtry = c(3, 4)
+    mtry = 3
   )
-
 
   # Prepare training with parallel computing
   cl <- makePSOCKcluster(5)
@@ -177,44 +203,66 @@ create_rf <- function(df, dependent_var, forecast = F) {
     method = "rf",
     tuneGrid = rfGrid,
     trControl = rf_trcontrol,
-    ntree = 500
+    ntree = 1000,
+    nodesize = 250
   )
 
   stopCluster(cl)
 
-  # generate predictions for our held-out testing data
-  pred <- predict(model, test_data)
+  # generate predictions for our held-out testing and training data
+  pred_train <- predict(model, train_data)
+  pred_test <- predict(model, test_data)
   pred_var_name <- paste0(dependent_var, "_pred")
+
+
   # getting the initial data frame with test and train data
   train_df <- rf_df[1:numberOfTrainingSamples, ]
-  test_df <- rf_df[-(1:numberOfTrainingSamples), ] %>%
-    mutate({{ pred_var_name }} := pred, .after = one_of(dependent_var))
+  test_df <- rf_df[-(1:numberOfTrainingSamples), ]
 
   # get error values
-  rmse <- sqrt(mean((pred - test_labels)^2))
-  mae <- mean(abs(pred - test_labels))
+  rmse_train <- sqrt(mean((pred_train - train_labels)^2, na.rm = T))
+  mae_train <- mean(abs(pred_train - train_labels), na.rm = T)
 
+  rmse_test <- sqrt(mean((pred_test - test_labels)^2, na.rm = T))
+  mae_test <- mean(abs(pred_test - test_labels), na.rm = T)
+
+  var_relevance <- importance(model$finalModel)
+  var_relevance <- tibble(variable = row.names(var_relevance),
+                IncNodePurity = unname(var_relevance[,1])) %>%
+  arrange(-IncNodePurity)
+  
+  
+  if (return_model == F) {
+    model <- NA
+  } else {
+    model <- list(model)
+  }
+  
+  train_data <- rf_df[1:numberOfTrainingSamples, ] %>%
+    select(date, one_of(dependent_var)) %>%
+    mutate(pred = pred_train)
+  
+  test_data <- rf_df[-(1:numberOfTrainingSamples), ] %>%
+    select(date, one_of(dependent_var)) %>%
+    mutate(pred = pred_test)
 
   # create a result data frame
   result <- tibble(
     Station = station_name,
     stationgroups = station_group,
-    train_matrix = list(train_data),
-    model = list(model),
-    test_df = list(test_df),
-    rmse = rmse,
-    mae = mae
+    dependent_var = dependent_var,
+    model_rf = model,
+    rmse_train = rmse_train,
+    mae_train = mae_train,
+    rmse_test = rmse_test,
+    mae_test = mae_test,
+    train_data = list(train_data),
+    test_data = list(test_data),
+    var_relevance = list(var_relevance)
   )
   return(result)
 }
-
-
 ```
-
-```{r}
-create_rf(airquality_data_by_station$messwerte[[7]], "caqi_index", F)
-```
-
 
 # Creation of Prediction Models
 
@@ -226,7 +274,7 @@ Prediction of CAQI index values based on weather and traffic data
 
 ```{r caqi_index_prediction}
 
-xgb_caqi_index_pred_2 <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "caqi_index", F) %>%
+rf_caqi_index_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "caqi_index", F) %>%
   bind_rows()
 
 ```
@@ -237,9 +285,8 @@ Prediction of NO~2~ values based on weather and traffic data
 
 ```{r NO2_prediction}
 
-xgb_no2_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "NO2", F) %>%
-  bind_rows() %>%
-  na.omit()
+rf_no2_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "NO2", F) %>%
+  bind_rows()
 
 ```
 
@@ -249,9 +296,8 @@ Prediction of O~3~ values based on weather and traffic data
 
 ```{r O3_prediction}
 
-xgb_o3_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "O3", F) %>%
-  bind_rows() %>%
-  na.omit()
+rf_o3_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "O3", F) %>%
+  bind_rows()
 
 ```
 
@@ -262,9 +308,8 @@ Prediction of PM~2.5~ values based on weather and traffic data
 
 ```{r pm25_prediction}
 
-xgb_pm25_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm25", F) %>%
-  bind_rows() %>%
-  na.omit()
+rf_pm25_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm25", F) %>%
+  bind_rows() 
 
 ```
 
@@ -274,9 +319,8 @@ Prediction of PM~10~ values based on weather and traffic data
 
 ```{r pm10_prediction}
 
-xgb_pm10_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm10", F) %>%
-  bind_rows() %>%
-  na.omit()
+rf_pm10_pred <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm10", F) %>%
+  bind_rows()
 
 ```
 
@@ -291,9 +335,8 @@ Forecast of CAQI index values based on weather, traffic data and 3h/6h lagged CA
 
 ```{r caqi_index_forecast}
 
-xgb_caqi_index_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "caqi_index", T) %>%
-  bind_rows() %>%
-  na.omit()
+rf_caqi_index_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "caqi_index", T) %>%
+  bind_rows() 
 
 ```
 
@@ -303,9 +346,8 @@ Forecast of NO~2~ values based on weather, traffic data and 3h/6h lagged NO2 val
 
 ```{r NO2_forecast}
 
-xgb_no2_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "NO2", T) %>%
-  bind_rows() %>%
-  na.omit()
+rf_no2_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "NO2", T) %>%
+  bind_rows() 
 
 ```
 
@@ -315,9 +357,8 @@ Forecast of O~3~ values based on weather, traffic data and 3h/6h lagged O3 value
 
 ```{r O3_forecast}
 
-xgb_o3_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "O3", T) %>%
-  bind_rows() %>%
-  na.omit()
+rf_o3_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "O3", T) %>%
+  bind_rows()
 
 ```
 
@@ -328,9 +369,8 @@ Forecast of PM~2.5~ values based on weather, traffic data and 3h/6h lagged PM2.5
 
 ```{r pm25_forecast}
 
-xgb_pm25_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm25", T) %>%
-  bind_rows() %>%
-  na.omit()
+rf_pm25_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm25", T) %>%
+  bind_rows()
 
 ```
 
@@ -340,8 +380,18 @@ Forecast of PM~10~ values based on weather, traffic data and 3h/6h lagged PM10 v
 
 ```{r pm10_forecast}
 
-xgb_pm10_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm10", T) %>%
-  bind_rows() %>%
-  na.omit()
+rf_pm10_forecast <- map(.x = airquality_data_by_station$messwerte, .f = create_rf, "pm10", T) %>%
+  bind_rows()
+
+```
+
+
+### Saving Results
+
+Results of the prediction and forecast models are saved for subsequent performance evaluation.
+
+```{r Result Tables}
+
+save(list = grep("pred|forecast", names(.GlobalEnv), value = TRUE), file = "rf_model_results.RData")
 
 ```

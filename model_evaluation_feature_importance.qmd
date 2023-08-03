@@ -1,0 +1,432 @@
+---
+title: "Model Evaluation - Feature Importance"
+execute:
+  message: false
+  warning: false
+author: "Antoine Thomas"
+date: 2023-08-03
+format:
+  html: 
+    embed-resources: true
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
+editor: source
+theme:
+  light: flatly
+  dark: darkly
+---
+
+
+```{r}
+library(tidyverse)
+library(gt)
+```
+
+
+### Import of data for feaature importance calculation
+
+```{r}
+
+
+# Import of RF Performance Data
+load("rf_model_results.RData")
+
+rf_pred <- grep("caqi_index_pred|pm10_pred|pm25_pred|no2_pred|o3_pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.x = ., .f = function (x) get(x) %>% mutate(pred_type = "prediction",
+                                                  .after = model_rf)) %>%
+  bind_rows()
+
+rf_forecast <- grep("caqi_index_forecast|pm10_forecast|pm25_forecast|no2_forecast|o3_forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.x = ., .f = function (x) get(x) %>% mutate(pred_type = "forecast",
+                                                  .after = model_rf)) %>%
+  bind_rows()
+
+
+remove(list = grep("caqi_index|pm10|pm25|no2|o3", names(.GlobalEnv), value = TRUE))
+
+
+
+# Import of XGB Performance Data
+load("xgb_model_results.RData")
+
+xgb_pred <- grep("caqi_index_pred|pm10_pred|pm25_pred|no2_pred|o3_pred", names(.GlobalEnv), value = TRUE) %>%
+  map(.x = ., .f = function (x) get(x) %>% mutate(pred_type = "prediction",
+                                                  .after = model_xgb)) %>%
+  bind_rows()
+
+xgb_forecast <- grep("caqi_index_forecast|pm10_forecast|pm25_forecast|no2_forecast|o3_forecast", names(.GlobalEnv), value = TRUE) %>%
+  map(.x = ., .f = function (x) get(x) %>% mutate(pred_type = "forecast",
+                                                  .after = model_xgb)) %>%
+  bind_rows()
+
+
+remove(list = grep("caqi_index|pm10|pm25|no2|o3", names(.GlobalEnv), value = TRUE))
+
+
+```
+
+### Feature Importance (XGBoost)
+
+```{r xgb feature importance gathering}
+
+
+normalize <- function(x, na.rm = TRUE) {
+    return((x- min(x)) /(max(x)-min(x)))
+}
+
+
+get_xgb_var_importance <- function(sg, dep_var) {
+  selected_obs <- xgb_pred %>%
+  filter(stationgroups %in% sg) %>%
+  select(-model_xgb) %>%
+  na.omit() %>%
+  filter(dependent_var == dep_var) %>%
+    # Normalisation of Gain Values
+    mutate(var_relevance = map(.x = var_relevance, 
+                                 .f = function (x) x %>% mutate(Gain = normalize(Gain)))) %>%
+    # Multplication with inversed RMSE (Train) values to enable comparability
+    mutate(var_relevance = map2(.x = var_relevance, .y = rmse_train,
+                                .f = function (x,y) x %>% mutate(Gain = Gain*(1/y))))
+  
+  
+  res <- map2(.x = selected_obs$var_relevance , .y = selected_obs$Station, .f = function(x,y) x %>% mutate(Station = y)) %>%
+    bind_rows() %>%
+    group_by(Feature) %>%
+    summarise(avg_gain = mean(Gain)) %>%
+    arrange(-avg_gain) %>%
+    head(n = 10)
+  
+  return(res)
+}
+
+xgb_var_relevance <- expand_grid(stations = list(c("background", "suburb"), c("traffic")),
+            dependent_var = c("caqi_index", "pm25", "pm10", "NO2", "O3")) %>%
+  mutate(relevant_variables = map2(.x = stations,
+                                  .y = dependent_var,
+                                  .f = function(x,y) get_xgb_var_importance(x, y)))
+
+
+
+xgb_var_relevance_t <- xgb_var_relevance %>%
+  filter(stations == "traffic") %>%
+  select(-stations) %>%
+  mutate(features = map(.x = relevant_variables, .f = function (x) x %>% pull(Feature)),
+         gain = map(.x = relevant_variables, .f = function (x) x %>% pull(avg_gain))) %>%
+  select(-relevant_variables) %>%
+  unnest(cols = c(features, gain)) %>%
+  pivot_wider(names_from = dependent_var, values_from = c(features, gain),names_glue = "{.value}_{dependent_var}") %>%
+  unnest() %>%
+  relocate(gain_caqi_index, .after = features_caqi_index) %>%
+  relocate(gain_pm25, .after = features_pm25) %>%
+  relocate(gain_pm10, .after = features_pm10) %>%
+  relocate(gain_NO2, .after = features_NO2)
+  
+
+
+xgb_var_relevance_sb <- xgb_var_relevance %>%
+  filter(stations != "traffic") %>%
+  select(-stations) %>%
+  mutate(features = map(.x = relevant_variables, .f = function (x) x %>% pull(Feature)),
+         gain = map(.x = relevant_variables, .f = function (x) x %>% pull(avg_gain))) %>%
+  select(-relevant_variables) %>%
+  unnest(cols = c(features, gain)) %>%
+  pivot_wider(names_from = dependent_var, values_from = c(features, gain),names_glue = "{.value}_{dependent_var}") %>%
+  unnest() %>%
+  relocate(gain_caqi_index, .after = features_caqi_index) %>%
+  relocate(gain_pm25, .after = features_pm25) %>%
+  relocate(gain_pm10, .after = features_pm10) %>%
+  relocate(gain_NO2, .after = features_NO2)
+```
+
+```{r xgb feature importance table}
+
+xgb_var_relevance_t %>%
+  gt() %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(features_caqi_index, gain_caqi_index)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(features_pm25, gain_pm25)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(features_pm10, gain_pm10)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(features_O3, gain_O3)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(features_NO2, gain_NO2)
+  ) %>%
+  cols_label(
+    features_caqi_index = "Features",
+    gain_caqi_index = "Importance",
+    features_pm25 = "Features",
+    gain_pm25 = "Importance",
+    features_pm10 = "Features",
+    gain_pm10 = "Importance",
+    features_O3 = "Features",
+    gain_O3 = "Importance",
+    features_NO2 = "Features",
+    gain_NO2 = "Importance"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 1:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Average Feature Importance at Traffic Stations**"),
+    subtitle = "Based on eXtreme Gradient Boosted Tree Regression Model"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+xgb_var_relevance_sb %>%
+  gt() %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(features_caqi_index, gain_caqi_index)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(features_pm25, gain_pm25)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(features_pm10, gain_pm10)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(features_O3, gain_O3)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(features_NO2, gain_NO2)
+  ) %>%
+  cols_label(
+    features_caqi_index = "Features",
+    gain_caqi_index = "Importance",
+    features_pm25 = "Features",
+    gain_pm25 = "Importance",
+    features_pm10 = "Features",
+    gain_pm10 = "Importance",
+    features_O3 = "Features",
+    gain_O3 = "Importance",
+    features_NO2 = "Features",
+    gain_NO2 = "Importance"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 1:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Average Feature Importance at Suburb & Background Stations**"),
+    subtitle = "Based on eXtreme Gradient Boosted Tree Regression Model"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+
+```
+
+
+
+```{r rf feature importance gathering}
+
+
+get_rf_var_importance <- function(sg, dep_var) {
+  selected_obs <- rf_pred %>%
+  filter(stationgroups %in% sg) %>%
+  select(-model_rf) %>%
+  na.omit() %>%
+  filter(dependent_var == dep_var) %>%
+    # Normalisation of Gain Values
+    mutate(var_relevance = map(.x = var_relevance, 
+                                 .f = function (x) x %>% mutate(IncNodePurity = normalize(IncNodePurity)))) %>%
+    # Multplication with inversed RMSE (Train) values to enable comparability
+    mutate(var_relevance = map2(.x = var_relevance, .y = rmse_train,
+                                .f = function (x,y) x %>% mutate(IncNodePurity = IncNodePurity*(1/y))))
+  
+  
+  selected_obs$var_relevance[[1]]
+  
+  res <- map2(.x = selected_obs$var_relevance , .y = selected_obs$Station, .f = function(x,y) x %>% mutate(Station = y)) %>%
+    bind_rows() %>%
+    group_by(variable) %>%
+    summarise(avg_IncNodePurity = mean(IncNodePurity)) %>%
+    arrange(-avg_IncNodePurity) %>%
+    head(n = 10)
+  
+  return(res)
+}
+
+rf_var_importance <- expand_grid(stations = list(c("background", "suburb"), c("traffic")),
+            dependent_var = c("caqi_index", "pm25", "pm10", "NO2", "O3")) %>%
+  mutate(relevant_variables = map2(.x = stations,
+                                  .y = dependent_var,
+                                  .f = function(x,y) get_rf_var_importance(x, y)))
+
+
+
+rf_var_importance_t <- rf_var_importance %>%
+  filter(stations == "traffic") %>%
+  select(-stations) %>%
+  mutate(features = map(.x = relevant_variables, .f = function (x) x %>% pull(variable)),
+         IncNodePurity = map(.x = relevant_variables, .f = function (x) x %>% pull(avg_IncNodePurity))) %>%
+  select(-relevant_variables) %>%
+  unnest(cols = c(features, IncNodePurity)) %>%
+  pivot_wider(names_from = dependent_var, values_from = c(features, IncNodePurity),names_glue = "{.value}_{dependent_var}") %>%
+  unnest() %>%
+  relocate(IncNodePurity_caqi_index, .after = features_caqi_index) %>%
+  relocate(IncNodePurity_pm25, .after = features_pm25) %>%
+  relocate(IncNodePurity_pm10, .after = features_pm10) %>%
+  relocate(IncNodePurity_NO2, .after = features_NO2)
+  
+
+rf_var_importance_sb <- rf_var_importance %>%
+  filter(stations != "traffic") %>%
+  select(-stations) %>%
+  mutate(features = map(.x = relevant_variables, .f = function (x) x %>% pull(variable)),
+         IncNodePurity = map(.x = relevant_variables, .f = function (x) x %>% pull(avg_IncNodePurity))) %>%
+  select(-relevant_variables) %>%
+  unnest(cols = c(features, IncNodePurity)) %>%
+  pivot_wider(names_from = dependent_var, values_from = c(features, IncNodePurity),names_glue = "{.value}_{dependent_var}") %>%
+  unnest() %>%
+  relocate(IncNodePurity_caqi_index, .after = features_caqi_index) %>%
+  relocate(IncNodePurity_pm25, .after = features_pm25) %>%
+  relocate(IncNodePurity_pm10, .after = features_pm10) %>%
+  relocate(IncNodePurity_NO2, .after = features_NO2)
+
+
+```
+
+```{r fr feature importance table}
+
+rf_var_importance_t %>%
+  gt() %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(features_caqi_index, IncNodePurity_caqi_index)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(features_pm25, IncNodePurity_pm25)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(features_pm10, IncNodePurity_pm10)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(features_O3, IncNodePurity_O3)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(features_NO2, IncNodePurity_NO2)
+  ) %>%
+  cols_label(
+    features_caqi_index = "Features",
+    IncNodePurity_caqi_index = "Importance",
+    features_pm25 = "Features",
+    IncNodePurity_pm25 = "Importance",
+    features_pm10 = "Features",
+    IncNodePurity_pm10 = "Importance",
+    features_O3 = "Features",
+    IncNodePurity_O3 = "Importance",
+    features_NO2 = "Features",
+    IncNodePurity_NO2 = "Importance"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 1:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Average Feature Importance at Traffic Stations**"),
+    subtitle = "Based on Random Forest Regression Model"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), 
+    table.font.names = "PT Sans"
+  )
+
+
+rf_var_importance_sb %>%
+  gt() %>%
+  tab_spanner(
+    label = md("**CAQI Index**"),
+    columns = c(features_caqi_index, IncNodePurity_caqi_index)
+  ) %>%
+  tab_spanner(
+    label = md("**PM<sub>2.5</sub>**"),
+    columns = c(features_pm25, IncNodePurity_pm25)
+  ) %>%
+  tab_spanner(
+    label = md("**PM~10~**"),
+    columns = c(features_pm10, IncNodePurity_pm10)
+  ) %>%
+  tab_spanner(
+    label = md("**O~3~**"),
+    columns = c(features_O3, IncNodePurity_O3)
+  ) %>%
+  tab_spanner(
+    label = md("**NO~2~**"),
+    columns = c(features_NO2, IncNodePurity_NO2)
+  ) %>%
+  cols_label(
+    features_caqi_index = "Features",
+    IncNodePurity_caqi_index = "Importance",
+    features_pm25 = "Features",
+    IncNodePurity_pm25 = "Importance",
+    features_pm10 = "Features",
+    IncNodePurity_pm10 = "Importance",
+    features_O3 = "Features",
+    IncNodePurity_O3 = "Importance",
+    features_NO2 = "Features",
+    IncNodePurity_NO2 = "Importance"
+  ) %>%
+  cols_align(
+    align = "center",
+    columns = 1:last_col()
+  ) %>%
+  tab_header(
+    title = md("**Average Feature Importance at Suburb & Background Stations**"),
+    subtitle = "Based on Random Forest Regression Model"
+  ) %>%
+  fmt_number(decimals = 2) %>%
+  cols_width(
+    2:last_col() ~ px(60)
+  ) %>%
+  tab_options(
+    table.font.size = px(14), # change font size
+    table.font.names = "PT Sans" # change font family
+  )
+
+
+
+```
+
+

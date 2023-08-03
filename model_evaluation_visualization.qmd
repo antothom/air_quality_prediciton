@@ -1,0 +1,218 @@
+---
+title: "Model Evaluation - Performance Visualization"
+execute:
+  message: false
+  warning: false
+author: "Antoine Thomas"
+date: 2023-08-03
+format:
+  html: 
+    embed-resources: true
+    code-tools:
+      source: true
+      toggle: true
+      caption: "Show code"
+editor: source
+theme:
+  light: flatly
+  dark: darkly
+---
+
+```{r}
+library(tidyverse)
+library(ggpubr)
+```
+
+
+```{r}
+df <- read_csv("model_perf.csv")
+```
+
+
+### Distributions of RMSE and MAE values
+
+```{r}
+
+df %>%
+  filter(prediction_type == "prediction",
+         model == "Linear Regression",
+         data == "test") %>%
+  select(-Station, -stationgroups, -prediction_type, -data, -model) %>%
+  summary()
+
+df %>%
+  filter(prediction_type == "prediction",
+         model == "Random Forest",
+         data == "test") %>%
+  select(-Station, -stationgroups, -prediction_type, -data, -model) %>%
+  summary()
+
+df %>%
+  filter(prediction_type == "prediction",
+         model == "XGBoost",
+         data == "test") %>%
+  select(-Station, -stationgroups, -prediction_type, -data, -model) %>%
+  summary()
+```
+
+### Plotting of RMSE and MAE values
+
+```{r}
+
+
+df %>%
+  filter(prediction_type == "forecast",
+         model == "Linear Regression",
+         data == "test") %>%
+  select(-Station, -stationgroups, -prediction_type, -data, -model) %>%
+  summary()
+
+df %>%
+  filter(prediction_type == "forecast",
+         model == "Random Forest",
+         data == "test") %>%
+  select(-Station, -stationgroups, -prediction_type, -data, -model) %>%
+  summary()
+
+df %>%
+  filter(prediction_type == "forecast",
+         model == "XGBoost",
+         data == "test") %>%
+  select(-Station, -stationgroups, -prediction_type, -data, -model) %>%
+  summary()
+
+```
+
+
+```{r}
+
+
+# Calculate mean performance metrics by model and data change to long format
+model_performance <- df %>%
+  filter(prediction_type == "prediction") %>% 
+  group_by(model, data) %>%
+  summarise(across(starts_with(c("caqi_index", "pm25", "pm10", "O3", "NO2")), mean, na.rm = TRUE), .groups = "drop") %>%
+  rename("CAQI Index_RMSE" = caqi_index_RMSE) %>%
+  rename("CAQI Index_MAE" = caqi_index_MAE) %>%
+  gather(key = "target_metric", value = "value", 3:12) %>%
+  separate(target_metric, into = c("target", "metric"), sep = "_", remove = TRUE) %>%
+  mutate(data = replace(data, data == "train", "Train"),
+         data = replace(data, data == "test", "Test"))
+  
+
+# Separate RMSE and MAE into different data frames for easier plotting
+rmse_df <- model_performance %>% filter(metric == 'RMSE')
+mae_df <- model_performance %>% filter(metric == 'MAE')
+
+# Plot RMSE for each model and target
+ggplot_rmse <- ggplot(rmse_df, aes(x=target, y=value, fill=model)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  facet_wrap(~data) +
+  theme_bw() +
+  labs(x="Prediction Target", y="RMSE", title="RMSE by Model and Target") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 7),
+        plot.title = element_text(face = "bold")) +
+  scale_fill_brewer(palette="Dark2") +
+  ylim(c(0,15))
+
+# Plot MAE for each model and target
+ggplot_mae <- ggplot(mae_df, aes(x=target, y=value, fill=model)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  theme_bw() +
+  facet_wrap(~data) +
+  labs(x="Prediction Target", y="MAE", title="MAE by Model and Target") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 7),
+        plot.title = element_text(face = "bold")) +
+  scale_fill_brewer(palette="Dark2") +
+  ylim(c(0,15))
+
+
+ggarrange(ggplot_rmse, ggplot_mae, ncol = 2, nrow = 1)
+
+remove(rmse_df, mae_df, model_performance, ggplot_mae, ggplot_rmse)
+```
+
+
+```{r}
+
+
+# Calculate mean performance metrics by model and stationgroups
+stationgroup_performance <- df %>%
+  filter(prediction_type == "prediction") %>%
+  group_by(model, stationgroups, data) %>%
+  summarise(across(starts_with(c("caqi_index", "pm25", "pm10", "O3", "NO2")), mean, na.rm = TRUE), .groups = "drop") %>%
+  rename("CAQI Index_RMSE" = caqi_index_RMSE) %>%
+  rename("CAQI Index_MAE" = caqi_index_MAE) %>%
+  gather(key = "target_metric", value = "value", 4:13) %>%
+  separate(target_metric, into = c("target", "metric"), sep = "_", remove = TRUE)
+
+
+# Separate RMSE and MAE into different data frames for easier plotting
+rmse_train_df <- stationgroup_performance %>% filter(metric == 'RMSE', data == "train")
+mae_train_df <- stationgroup_performance %>% filter(metric == 'MAE', data == "train")
+rmse_test_df <- stationgroup_performance %>% filter(metric == 'RMSE', data == "test")
+mae_test_df <- stationgroup_performance %>% filter(metric == 'MAE', data == "test")
+
+# Plot RMSE for each model and target (Train)
+ggplot_rmse_train <- ggplot(rmse_train_df, aes(x=target, y=value, fill=model)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  facet_wrap(~stationgroups) +
+  theme_bw() +
+  labs(x="Prediction Target", y="RMSE", title="RMSE by Model, Target and Station Type (Train)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 7),
+        plot.title = element_text(face = "bold")) +
+  scale_fill_brewer(palette="Dark2") +
+  ylim(c(0,17))
+
+# Plot MAE for each model and target (Train)
+ggplot_mae_train <- ggplot(mae_train_df, aes(x=target, y=value, fill=model)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  facet_wrap(~stationgroups) +
+  theme_bw() +
+  labs(x="Prediction Target", y="MAE", title="MAE by Model, Target and Station Type (Train)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 7),
+        plot.title = element_text(face = "bold")) +
+  scale_fill_brewer(palette="Dark2") +
+  ylim(c(0,17))
+
+# Plot RMSE for each model and target (Test)
+ggplot_rmse_test <- ggplot(rmse_test_df, aes(x=target, y=value, fill=model)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  facet_wrap(~stationgroups) +
+  theme_bw() +
+  labs(x="Prediction Target", y="RMSE", title="RMSE by Model, Target and Station Type (Test)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 7),
+        plot.title = element_text(face = "bold")) +
+  scale_fill_brewer(palette="Dark2") +
+  ylim(c(0,17))
+
+# Plot MAE for each model and target (Test)
+ggplot_mae_test <- ggplot(mae_test_df, aes(x=target, y=value, fill=model)) +
+  geom_bar(stat="identity", position=position_dodge()) +
+  facet_wrap(~stationgroups) +
+  theme_bw() +
+  labs(x="Prediction Target", y="MAE", title="MAE by Model, Target and Station Type (Test)") +
+  theme(legend.title = element_blank(),
+        legend.position = "bottom",
+        axis.text.x = element_text(size = 7),
+        plot.title = element_text(face = "bold")) +
+  scale_fill_brewer(palette="Dark2") +
+  ylim(c(0,17))
+
+
+ggarrange(ggplot_rmse_test, ggplot_rmse_train, ncol = 2, nrow = 1)
+
+ggarrange(ggplot_mae_test, ggplot_mae_train, ncol = 2, nrow = 1)
+
+```
+
